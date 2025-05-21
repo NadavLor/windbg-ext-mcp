@@ -1,3 +1,7 @@
+/**
+ * @file output_callbacks.h
+ * @brief Defines a class to capture WinDbg debugger output.
+ */
 #pragma once
 
 #include "pch.h"
@@ -8,7 +12,12 @@
 // Maximum size for command output to prevent excessive memory usage
 constexpr size_t MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
 
-// Class to capture debugger output
+/**
+ * @class OutputCallbacks
+ * @brief Implements IDebugOutputCallbacks to capture debugger output.
+ * 
+ * This class is used to intercept and store output from WinDbg commands.
+ */
 class OutputCallbacks : public IDebugOutputCallbacks {
 public:
     OutputCallbacks();
@@ -28,15 +37,20 @@ public:
         __in PCSTR Text
     );
 
-    // Get the captured output
-    std::string GetOutput() const;
+    /**
+     * @brief Get the captured output.
+     * @return A string containing the captured output.
+     */
+    [[nodiscard]] std::string GetOutput() const;
     
-    // Clear the captured output
+    /**
+     * @brief Clear the captured output buffer.
+     */
     void Clear();
 
 private:
-    std::string m_output;
-    LONG m_refCount;
-    bool m_extensionError = false;
-    bool m_exportError = false;
+    std::string m_output;        ///< Buffer storing captured output
+    LONG m_refCount;             ///< Reference count for COM interface
+    bool m_extensionError{false}; ///< Flag indicating if an extension error occurred
+    bool m_exportError{false};    ///< Flag indicating if an export error occurred
 }; 

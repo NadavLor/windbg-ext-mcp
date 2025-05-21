@@ -1,4 +1,7 @@
-// dllmain.cpp : Defines the entry point for the DLL application.
+/**
+ * @file dllmain.cpp
+ * @brief Defines the entry point for the WinDbg MCP extension DLL.
+ */
 #include "pch.h"
 
 

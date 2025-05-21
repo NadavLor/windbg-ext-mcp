@@ -1,15 +1,22 @@
+/**
+ * @file types.cpp
+ * @brief Implementation of the WinDbg extension initialization and command handlers.
+ */
 #include "pch.h"
 #include <Windows.h>
 #define KDEXT_64BIT
 #include <DbgEng.h>
 #include <WDBGEXTS.H>
 #include <atlcomcli.h>
+#include <memory>
+#include <atomic>
 #include "ipc/mcp_server.h"
 #include "command/command_handlers.h"
+#include "utils/constants.h"
 
 #pragma comment(lib, "dbgeng")
 
-// Define the ExtensionApis object here (no redeclaration needed)
+// Define the ExtensionApis object here
 WINDBG_EXTENSION_APIS64 ExtensionApis{ sizeof(ExtensionApis) };
 
 // Global MCP server instance
@@ -19,10 +26,16 @@ std::unique_ptr<MCPServer> g_mcpServer;
 std::atomic<bool> g_dllUnloading(false);
 
 // Event to signal clean shutdown
-HANDLE g_shutdownEvent = NULL;
+HANDLE g_shutdownEvent = nullptr;
 
-// Function to ensure cleanup on process exit
-// Signature for WAITORTIMERCALLBACK is VOID CALLBACK (PVOID, BOOLEAN)
+/**
+ * @brief Cleanup routine called when the process is terminating.
+ * 
+ * This function ensures all resources are properly released.
+ * 
+ * @param Parameter Not used.
+ * @param TimerOrWaitFired Not used.
+ */
 VOID CALLBACK CleanupRoutine(PVOID Parameter, BOOLEAN TimerOrWaitFired) {
 	// If a clean shutdown hasn't already been performed, do it now
 	if (!g_dllUnloading.exchange(true)) {
@@ -35,38 +48,54 @@ VOID CALLBACK CleanupRoutine(PVOID Parameter, BOOLEAN TimerOrWaitFired) {
 		}
 		
 		// Signal the shutdown event if it exists
-		if (g_shutdownEvent != NULL) {
+		if (g_shutdownEvent != nullptr) {
 			SetEvent(g_shutdownEvent);
 			CloseHandle(g_shutdownEvent);
-			g_shutdownEvent = NULL;
+			g_shutdownEvent = nullptr;
 		}
 	}
 }
 
+/**
+ * @brief Initialize the debug extension.
+ * 
+ * This function is called when the extension is loaded by WinDbg.
+ * It initializes the MCP server and registers command handlers.
+ * 
+ * @param version Pointer to a version number to be set.
+ * @param flags Pointer to flags to be set.
+ * @return HRESULT indicating success or failure.
+ */
 HRESULT __stdcall DebugExtensionInitialize(PULONG version, PULONG flags) {
+	if (!version || !flags) {
+		return E_POINTER;
+	}
+
 	CComPtr<IDebugClient> client;
-	auto hr = DebugCreate(__uuidof(IDebugClient), (void**)&client);
-	if (FAILED(hr))
+	HRESULT hr = DebugCreate(__uuidof(IDebugClient), (void**)&client);
+	if (FAILED(hr)) {
 		return hr;
+	}
 
 	CComQIPtr<IDebugControl> control(client);
 	hr = control->GetWindbgExtensionApis64(&ExtensionApis);
-	if (FAILED(hr))
+	if (FAILED(hr)) {
 		return hr;
+	}
 
 	*version = DEBUG_EXTENSION_VERSION(1, 0);
 	*flags = 0;
 
 	// Create shutdown event
-	g_shutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-	if (g_shutdownEvent == NULL) {
+	g_shutdownEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	if (g_shutdownEvent == nullptr) {
 		dprintf("Warning: Failed to create shutdown event\n");
 	}
 	
 	// Register process exit callback for cleanup
-	PVOID token = NULL;
+	PVOID token = nullptr;
 	if (!RegisterWaitForSingleObject(&token, GetCurrentProcess(),
-		CleanupRoutine, NULL, INFINITE, WT_EXECUTEONLYONCE)) {
+		CleanupRoutine, nullptr, INFINITE, WT_EXECUTEONLYONCE)) {
 		dprintf("Warning: Failed to register process exit callback\n");
 	}
 
@@ -80,12 +109,19 @@ HRESULT __stdcall DebugExtensionInitialize(PULONG version, PULONG flags) {
 	if (!g_mcpServer->Start()) {
 		dprintf("Failed to start MCP server\n");
 	} else {
-		dprintf("MCP server started on pipe: \\\\.\\pipe\\windbgmcp\n");
+		dprintf("MCP server started on pipe: %s\n", Constants::DEFAULT_PIPE_NAME);
 	}
 
 	return S_OK;
 }
 
+/**
+ * @brief Display help for the extension commands.
+ * 
+ * @param client Pointer to the debug client.
+ * @param args Command arguments.
+ * @return HRESULT indicating success or failure.
+ */
 STDAPI help(IDebugClient* client, PCSTR args) {
 	dprintf("WinDBG MCP Extension Help\n");
 	dprintf("  help - show this help\n");
@@ -98,6 +134,13 @@ STDAPI help(IDebugClient* client, PCSTR args) {
 	return S_OK;
 }
 
+/**
+ * @brief Display kernel object types.
+ * 
+ * @param client Pointer to the debug client.
+ * @param args Command arguments.
+ * @return HRESULT indicating success or failure.
+ */
 STDAPI objecttypes(IDebugClient* client, PCSTR args) {
 	auto types = GetExpression("nt!ObpObjectTypes");
 	if (types == 0) {
@@ -111,11 +154,13 @@ STDAPI objecttypes(IDebugClient* client, PCSTR args) {
 
 	while (types) {
 		ULONG64 type;
-		if (!ReadPointer(types, &type))
+		if (!ReadPointer(types, &type)) {
 			break;
+		}
 
-		if (type == 0)
+		if (type == 0) {
 			break;
+		}
 
 		ULONG totalObjects, totalHandles;
 		ULONG peakObjects, peakHandles;
@@ -140,7 +185,13 @@ STDAPI objecttypes(IDebugClient* client, PCSTR args) {
 	return S_OK;
 }
 
-// Function to start the MCP server
+/**
+ * @brief Start the MCP server.
+ * 
+ * @param client Pointer to the debug client.
+ * @param args Command arguments.
+ * @return HRESULT indicating success or failure.
+ */
 STDAPI mcpstart(IDebugClient* client, PCSTR args) {
 	if (!g_mcpServer) {
 		g_mcpServer = std::make_unique<MCPServer>();
@@ -157,11 +208,17 @@ STDAPI mcpstart(IDebugClient* client, PCSTR args) {
 		return E_FAIL;
 	}
 	
-	dprintf("MCP server started on pipe: \\\\.\\pipe\\windbgmcp\n");
+	dprintf("MCP server started on pipe: %s\n", Constants::DEFAULT_PIPE_NAME);
 	return S_OK;
 }
 
-// Function to stop the MCP server
+/**
+ * @brief Stop the MCP server.
+ * 
+ * @param client Pointer to the debug client.
+ * @param args Command arguments.
+ * @return HRESULT indicating success or failure.
+ */
 STDAPI mcpstop(IDebugClient* client, PCSTR args) {
 	if (!g_mcpServer || !g_mcpServer->IsRunning()) {
 		dprintf("MCP server is not running\n");
@@ -174,7 +231,13 @@ STDAPI mcpstop(IDebugClient* client, PCSTR args) {
 	return S_OK;
 }
 
-// Function to check MCP server status
+/**
+ * @brief Display the MCP server status.
+ * 
+ * @param client Pointer to the debug client.
+ * @param args Command arguments.
+ * @return HRESULT indicating success or failure.
+ */
 STDAPI mcpstatus(IDebugClient* client, PCSTR args) {
 	if (!g_mcpServer) {
 		dprintf("MCP server has not been initialized\n");
@@ -182,7 +245,7 @@ STDAPI mcpstatus(IDebugClient* client, PCSTR args) {
 	}
 	
 	if (g_mcpServer->IsRunning()) {
-		dprintf("MCP server is running on pipe: \\\\.\\pipe\\windbgmcp\n");
+		dprintf("MCP server is running on pipe: %s\n", Constants::DEFAULT_PIPE_NAME);
 	} else {
 		dprintf("MCP server is not running\n");
 	}
@@ -190,6 +253,12 @@ STDAPI mcpstatus(IDebugClient* client, PCSTR args) {
 	return S_OK;
 }
 
+/**
+ * @brief Uninitialize the debug extension.
+ * 
+ * This function is called when the extension is unloaded by WinDbg.
+ * It cleans up resources used by the extension.
+ */
 extern "C"
 void CALLBACK DebugExtensionUninitialize(void) {
 	// Set flag to indicate unloading
@@ -199,32 +268,35 @@ void CALLBACK DebugExtensionUninitialize(void) {
 	const DWORD CLEANUP_TIMEOUT_MS = 5000; // 5 seconds
 	dprintf("WinDbg MCP Extension: Uninitializing...\n");
 	
-	// Clean up MCP server
-	if (g_mcpServer) {
-		dprintf("WinDbg MCP Extension: Stopping MCP server...\n");
+	// Stop the MCP server if it's running
+	if (g_mcpServer && g_mcpServer->IsRunning()) {
+		dprintf("Stopping MCP server...\n");
 		g_mcpServer->Stop();
-		g_mcpServer.reset();
-		dprintf("WinDbg MCP Extension: MCP server stopped\n");
 	}
 	
-	// Signal and wait on shutdown event if it exists
-	if (g_shutdownEvent != NULL) {
+	// Free the MCP server
+	g_mcpServer.reset();
+	
+	// Signal the shutdown event and clean up
+	if (g_shutdownEvent != nullptr) {
 		SetEvent(g_shutdownEvent);
 		
-		// Wait briefly for pending operations to complete
+		// Wait for potential cleanup operations to complete
 		WaitForSingleObject(g_shutdownEvent, CLEANUP_TIMEOUT_MS);
 		
-		// Close the event handle
 		CloseHandle(g_shutdownEvent);
-		g_shutdownEvent = NULL;
+		g_shutdownEvent = nullptr;
 	}
 	
 	dprintf("WinDbg MCP Extension: Uninitialized\n");
 }
 
+/**
+ * @brief Test function to verify the extension is working.
+ */
 extern "C"
 void CALLBACK hello(_In_ HANDLE, _In_ HANDLE, _In_ ULONG, _In_ PCSTR /*args*/) {
-	dprintf("windbgmcp-extension: hello from the MCP prototype!\n");
+	dprintf("Hello from WinDbg MCP Extension!\n");
 }
 
 

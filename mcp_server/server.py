@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 """
 WinDbg MCP Server implementation with FastMCP.
-This server connects WinDbg to Cursor via the Model Context Protocol (MCP).
+
+This server connects WinDbg to Cursor via the Model Context Protocol (MCP),
+enabling LLM-assisted debugging of Windows kernel and user-mode applications.
 """
+from typing import Any, Dict, List, Optional, Union
 from fastmcp import FastMCP, Context
 from fastmcp.settings import ServerSettings
 from commands import execute_command, display_type, display_memory, DEFAULT_TIMEOUT_MS
@@ -61,20 +64,40 @@ AVAILABLE_TOOLS = [
 ]
 
 @mcp.tool()
-async def check_connection(ctx: Context, random_string=None):
-    """Check if the connection to the MCP server is working"""
+async def check_connection(ctx: Context, random_string: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Check if the connection to the MCP server is working.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string to echo back (for testing)
+        
+    Returns:
+        Dict with connection status and optional echo
+    """
     logger.debug(f"Connection check with random string: {random_string}")
     try:
-        # Just return True, this doesn't actually check WinDBG connection
-        return True
+        result = {"connection": True}
+        if random_string:
+            result["echo"] = random_string
+        return result
     except Exception as e:
         logger.error(f"Error in check_connection: {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e), "connection": False}
 
 @mcp.tool()
-async def get_metadata(ctx: Context, random_string=None):
-    """Get metadata about the WinDbg debugging session including version and loaded modules"""
+async def get_metadata(ctx: Context, random_string: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get metadata about the WinDbg debugging session including version and loaded modules.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        Dict with version info, modules list, and connection status
+    """
     logger.debug("Getting metadata")
     try:
         # Execute 'version' command to get WinDbg version
@@ -94,8 +117,17 @@ async def get_metadata(ctx: Context, random_string=None):
         return {"error": str(e), "connected": False}
 
 @mcp.tool()
-async def get_current_address(ctx: Context, random_string=None):
-    """Get the current instruction pointer address"""
+async def get_current_address(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    Get the current instruction pointer address.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        The instruction pointer address or error dict
+    """
     logger.debug("Getting current address")
     try:
         # Execute command to get the current instruction pointer
@@ -106,8 +138,18 @@ async def get_current_address(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def list_modules(ctx: Context, count=None, offset=None):
-    """List loaded modules in the debugging session"""
+async def list_modules(ctx: Context, count: Optional[int] = None, offset: Optional[int] = None) -> Union[str, Dict[str, str]]:
+    """
+    List loaded modules in the debugging session.
+    
+    Args:
+        ctx: The MCP context
+        count: Optional number of modules to list
+        offset: Optional offset to start listing from
+        
+    Returns:
+        List of modules or error dict
+    """
     logger.debug(f"Listing modules with count={count}, offset={offset}")
     try:
         cmd = "lm"
@@ -120,8 +162,17 @@ async def list_modules(ctx: Context, count=None, offset=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def run_command(ctx: Context, command: str):
-    """Run a WinDbg command and return its output"""
+async def run_command(ctx: Context, command: str) -> Union[str, Dict[str, str]]:
+    """
+    Run a WinDbg command and return its output.
+    
+    Args:
+        ctx: The MCP context
+        command: The WinDbg command to execute
+        
+    Returns:
+        Command output or error dict
+    """
     logger.debug(f"Running command: {command}")
     try:
         # Determine appropriate timeout based on command complexity
@@ -150,8 +201,18 @@ async def run_command(ctx: Context, command: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def display_type_tool(ctx: Context, type_name: str, address: str = ""):
-    """Display details about a data type or structure"""
+async def display_type_tool(ctx: Context, type_name: str, address: str = "") -> Union[str, Dict[str, str]]:
+    """
+    Display details about a data type or structure.
+    
+    Args:
+        ctx: The MCP context
+        type_name: The name of the type to display
+        address: Optional memory address where the structure is located
+        
+    Returns:
+        Type information or error dict
+    """
     logger.debug(f"Displaying type {type_name} at address {address}")
     try:
         return display_type(type_name, address)
@@ -161,8 +222,18 @@ async def display_type_tool(ctx: Context, type_name: str, address: str = ""):
         return {"error": str(e)}
 
 @mcp.tool()
-async def display_memory(ctx: Context, address: str, length: int = 32):
-    """Display memory at the specified address"""
+async def display_memory(ctx: Context, address: str, length: int = 32) -> Union[str, Dict[str, str]]:
+    """
+    Display memory at the specified address.
+    
+    Args:
+        ctx: The MCP context
+        address: The memory address to display
+        length: Number of bytes to display (default: 32)
+        
+    Returns:
+        Memory contents or error dict
+    """
     logger.debug(f"Displaying memory at {address} with length {length}")
     try:
         return display_memory(address, length)
@@ -172,8 +243,17 @@ async def display_memory(ctx: Context, address: str, length: int = 32):
         return {"error": str(e)}
 
 @mcp.tool()
-async def set_breakpoint(ctx: Context, address: str):
-    """Set a breakpoint at the specified address or symbol"""
+async def set_breakpoint(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Set a breakpoint at the specified address or symbol.
+    
+    Args:
+        ctx: The MCP context
+        address: The address or symbol where to set the breakpoint
+        
+    Returns:
+        Result of the breakpoint command or error dict
+    """
     logger.debug(f"Setting breakpoint at {address}")
     try:
         # Set breakpoint and get confirmation
@@ -185,8 +265,17 @@ async def set_breakpoint(ctx: Context, address: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def list_processes(ctx: Context, random_string=None):
-    """List all processes in the current debugging session"""
+async def list_processes(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    List all processes in the current debugging session.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        List of processes or error message
+    """
     logger.debug("Listing processes")
     try:
         # Use our improved handler for process commands with a longer timeout
@@ -203,11 +292,20 @@ async def list_processes(ctx: Context, random_string=None):
     except Exception as e:
         logger.error(f"Error listing processes: {e}")
         logger.error(traceback.format_exc())
-        return f"Error: {str(e)}"
+        return {"error": str(e)}
 
 @mcp.tool()
-async def get_peb(ctx: Context, random_string=None):
-    """Get the Process Environment Block (PEB) information for the current process"""
+async def get_peb(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    Get the Process Environment Block (PEB) information for the current process.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        PEB information or error dict
+    """
     logger.debug("Getting PEB information")
     try:
         # The !peb command displays information about the Process Environment Block
@@ -218,8 +316,17 @@ async def get_peb(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_teb(ctx: Context, random_string=None):
-    """Get the Thread Environment Block (TEB) information for the current thread"""
+async def get_teb(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    Get the Thread Environment Block (TEB) information for the current thread.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        TEB information or error dict
+    """
     logger.debug("Getting TEB information")
     try:
         # The !teb command displays information about the Thread Environment Block
@@ -230,8 +337,18 @@ async def get_teb(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def switch_process(ctx: Context, address: str, save_previous: bool = True):
-    """Switch to the specified process by address"""
+async def switch_process(ctx: Context, address: str, save_previous: bool = True) -> Union[str, Dict[str, str]]:
+    """
+    Switch to the specified process by address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address of the process to switch to
+        save_previous: Whether to save the current process context (default: True)
+        
+    Returns:
+        Switch result or error dict
+    """
     logger.debug(f"Switching to process at {address}")
     try:
         # Import context handling functions
@@ -259,8 +376,17 @@ async def switch_process(ctx: Context, address: str, save_previous: bool = True)
         return {"error": str(e)}
 
 @mcp.tool()
-async def restore_process_context(ctx: Context, random_string=None):
-    """Restore the previously saved process context"""
+async def restore_process_context(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    Restore the previously saved process context.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        Restoration result or error dict
+    """
     logger.debug("Restoring previous process context")
     try:
         # Import context restoration function
@@ -279,8 +405,17 @@ async def restore_process_context(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def list_threads(ctx: Context, random_string=None):
-    """List all threads in the current process"""
+async def list_threads(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    List all threads in the current process.
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        List of threads or error dict
+    """
     logger.debug("Listing threads")
     try:
         # The !thread command lists thread information
@@ -291,8 +426,17 @@ async def list_threads(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def switch_thread(ctx: Context, address: str):
-    """Switch to the specified thread by address"""
+async def switch_thread(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Switch to the specified thread by address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address of the thread to switch to
+        
+    Returns:
+        Switch result or error dict
+    """
     logger.debug(f"Switching to thread at {address}")
     try:
         # The .thread command switches the current thread context
@@ -303,8 +447,17 @@ async def switch_thread(ctx: Context, address: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_interrupt(ctx: Context, address: str):
-    """Get details about an interrupt at the specified address"""
+async def get_interrupt(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Get details about an interrupt at the specified address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address of the interrupt to examine
+        
+    Returns:
+        Interrupt information or error dict
+    """
     logger.debug(f"Getting interrupt information for {address}")
     try:
         # Using display_type similar to hybrid_server approach
@@ -315,8 +468,17 @@ async def get_interrupt(ctx: Context, address: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_idt(ctx: Context, random_string=None):
-    """Get the Interrupt Descriptor Table (IDT)"""
+async def get_idt(ctx: Context, random_string: Optional[str] = None) -> Union[str, Dict[str, str]]:
+    """
+    Get the Interrupt Descriptor Table (IDT).
+    
+    Args:
+        ctx: The MCP context
+        random_string: Optional string for compatibility
+        
+    Returns:
+        IDT information or error dict
+    """
     logger.debug("Getting IDT")
     try:
         # The !idt command without parameters shows the entire Interrupt Descriptor Table
@@ -327,8 +489,17 @@ async def get_idt(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_object(ctx: Context, address: str):
-    """Get details about a kernel object at the specified address"""
+async def get_object(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Get details about a kernel object at the specified address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address of the kernel object to examine
+        
+    Returns:
+        Object information or error dict
+    """
     logger.debug(f"Getting object information for {address}")
     try:
         # The !object command shows information about a kernel object
@@ -339,23 +510,41 @@ async def get_object(ctx: Context, address: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_object_header(ctx: Context, address: str):
-    """Get the object header for the object at the specified address"""
-    logger.debug(f"Getting object header for {address}")
+async def get_object_header(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Get details about a kernel object header at the specified address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address of the object header to examine
+        
+    Returns:
+        Object header information or error dict
+    """
+    logger.debug(f"Getting object header information for {address}")
     try:
-        # The !objheader command shows the header information for an object
+        # The !objheader command shows information about a kernel object header
         return execute_command(f"!objheader {address}", timeout_ms=15000)
     except Exception as e:
-        logger.error(f"Error getting object header for '{address}': {e}")
+        logger.error(f"Error getting object header information for '{address}': {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_pte(ctx: Context, address: str):
-    """Get the Page Table Entry (PTE) for the specified address"""
+async def get_pte(ctx: Context, address: str) -> Union[str, Dict[str, str]]:
+    """
+    Get Page Table Entry (PTE) for the specified address.
+    
+    Args:
+        ctx: The MCP context
+        address: Address to examine the PTE for
+        
+    Returns:
+        PTE information or error dict
+    """
     logger.debug(f"Getting PTE for {address}")
     try:
-        # The !pte command shows the Page Table Entry for an address
+        # The !pte command shows the Page Table Entry for a given address
         return execute_command(f"!pte {address}", timeout_ms=15000)
     except Exception as e:
         logger.error(f"Error getting PTE for '{address}': {e}")
@@ -363,33 +552,48 @@ async def get_pte(ctx: Context, address: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_handle(ctx: Context, address: str = ""):
-    """Get handle information for the current process or a specific handle"""
-    logger.debug(f"Getting handle information for {address}")
-    try:
-        # Use our improved handler for handle commands
-        from commands.command_handlers import handle_handle_command
+async def get_handle(ctx: Context, address: str = "") -> Union[str, Dict[str, str]]:
+    """
+    Get information about a handle or all handles in the system.
+    
+    Args:
+        ctx: The MCP context
+        address: Optional handle address to examine (if empty, lists all handles)
         
+    Returns:
+        Handle information or error dict
+    """
+    logger.debug(f"Getting handle information for {address or 'all handles'}")
+    try:
         cmd = "!handle"
         if address:
             cmd += f" {address}"
         else:
-            # Add flags for full output when no specific handle is requested
+            # List all handles with summary information
             cmd += " 0 f"
-        
-        return handle_handle_command(cmd, timeout_ms=120000)
+            
+        # Handle command can take a long time to execute
+        return execute_command(cmd, timeout_ms=120000)
     except Exception as e:
         logger.error(f"Error getting handle information: {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e)}
 
 @mcp.tool()
-async def search_symbols(ctx: Context, pattern: str):
-    """Search for symbols matching the specified pattern"""
-    logger.debug(f"Searching for symbols matching {pattern}")
+async def search_symbols(ctx: Context, pattern: str) -> Union[str, Dict[str, str]]:
+    """
+    Search for symbols matching the specified pattern.
+    
+    Args:
+        ctx: The MCP context
+        pattern: Symbol pattern to search for
+        
+    Returns:
+        List of matching symbols or error dict
+    """
+    logger.debug(f"Searching for symbols matching '{pattern}'")
     try:
-        # The x command (examine symbols) can be used to search for symbols
-        # Match the exact format from hybrid_server
+        # The x command finds symbols matching a pattern
         return execute_command(f"x {pattern}", timeout_ms=30000)
     except Exception as e:
         logger.error(f"Error searching for symbols matching '{pattern}': {e}")
@@ -397,49 +601,72 @@ async def search_symbols(ctx: Context, pattern: str):
         return {"error": str(e)}
 
 @mcp.tool()
-async def get_stack_trace(ctx: Context, thread_id: str = ""):
-    """Get the stack trace for the current thread or a specific thread"""
-    logger.debug(f"Getting stack trace for thread {thread_id}")
-    try:
-        if thread_id:
-            # If a thread ID is specified, first switch to that thread
-            try:
-                execute_command(f".thread {thread_id}", timeout_ms=15000)
-            except Exception as e:
-                logger.error(f"Error switching to thread '{thread_id}': {e}")
-                return {"error": f"Failed to switch to thread {thread_id}: {str(e)}"}
+async def get_stack_trace(ctx: Context, thread_id: str = "") -> Union[str, Dict[str, str]]:
+    """
+    Get the stack trace for the current or specified thread.
+    
+    Args:
+        ctx: The MCP context
+        thread_id: Optional thread ID or address to get stack trace for
         
-        # Get a stack trace with a good depth
-        return execute_command("k 100", timeout_ms=30000)
+    Returns:
+        Stack trace information or error dict
+    """
+    logger.debug(f"Getting stack trace for {thread_id or 'current thread'}")
+    try:
+        cmd = "kb"
+        if thread_id:
+            # First switch to the specified thread
+            switch_result = execute_command(f".thread {thread_id}", timeout_ms=10000)
+            if isinstance(switch_result, dict) and "error" in switch_result:
+                return {"error": f"Failed to switch to thread {thread_id}: {switch_result['error']}"}
+                
+        # Get a detailed stack trace with all parameters
+        return execute_command(f"{cmd} 100", timeout_ms=30000)
     except Exception as e:
         logger.error(f"Error getting stack trace: {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e)}
 
-# Main entry point
 def main():
+    """
+    Main entry point for the WinDbg MCP Server.
+    
+    Configures the server based on environment variables and starts it.
+    """
     logger.info("Starting WinDbg MCP Server")
     
+    # Print available tools
     print("WinDbg MCP Server")
     print("================")
-    print("Available tools:")
+    print(f"Available tools ({len(AVAILABLE_TOOLS)}):")
     for tool_name in AVAILABLE_TOOLS:
         print(f"  - {tool_name}")
     
-    # Determine which transport to use
-    transport = os.environ.get("MCP_TRANSPORT", "sse")
+    # Configure server settings from environment variables
+    transport = os.environ.get("MCP_TRANSPORT", "sse").lower()
     host = os.environ.get("MCP_HOST", "localhost")
     port = int(os.environ.get("MCP_PORT", "8000"))
     
-    # Use environment variables for timeouts
-    os.environ["FASTMCP_TIMEOUT"] = os.environ.get("FASTMCP_TIMEOUT", "120")
+    # Configure timeouts
+    timeout = os.environ.get("FASTMCP_TIMEOUT", "120")
+    os.environ["FASTMCP_TIMEOUT"] = timeout
     
-    logger.info(f"Using transport: {transport}")
-    if transport.lower() == "sse":
+    # Log server configuration
+    logger.info(f"Server configuration:")
+    logger.info(f"  - Transport: {transport}")
+    logger.info(f"  - Host: {host}")
+    logger.info(f"  - Port: {port}")
+    logger.info(f"  - Timeout: {timeout} seconds")
+    
+    if transport == "sse":
+        print(f"Server URL: http://{host}:{port}/sse")
         logger.info(f"MCP Server available at: http://{host}:{port}/sse")
+    else:
+        print(f"Server running with {transport} transport on port {port}")
     
     try:
-        # Run with appropriate transport settings
+        # Run the FastMCP server with the configured settings
         mcp.run(
             host=host,
             port=port,
@@ -447,9 +674,11 @@ def main():
         )
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
+        print("Server stopped by user. Goodbye!")
     except Exception as e:
         logger.error(f"Error starting server: {e}")
         logger.error(traceback.format_exc())
+        print(f"Error starting server: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
