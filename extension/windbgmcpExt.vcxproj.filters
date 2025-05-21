@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Source Files\command">
+      <UniqueIdentifier>{38E968E5-F62A-4e35-A1C8-DDEA1A1B7D7A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\ipc">
+      <UniqueIdentifier>{4E7C7B7F-B2F4-43f1-B292-CA6354F1DCF2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\utils">
+      <UniqueIdentifier>{567C3FF0-13B5-4ac4-A2C0-40D9AE6AB1BE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\command">
+      <UniqueIdentifier>{FCAE2312-A9A3-4a90-8FCA-2E1DEE3FAFAC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\ipc">
+      <UniqueIdentifier>{DE7B9821-B1FD-4e70-AC1C-B1EE5DBA44C5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\utils">
+      <UniqueIdentifier>{C908DE1A-9BE2-4e83-A78E-8FEBEFABB48E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="External Libraries">
+      <UniqueIdentifier>{B3F84D02-BBDD-4c6e-A16D-F6CA3B2EA06E}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\json.hpp">
+      <Filter>External Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="src\command\command_handlers.h">
+      <Filter>Header Files\command</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ipc\mcp_server.h">
+      <Filter>Header Files\ipc</Filter>
+    </ClInclude>
+    <ClInclude Include="src\utils\output_callbacks.h">
+      <Filter>Header Files\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\utils\constants.h">
+      <Filter>Header Files\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\framework.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\pch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\utils\types.cpp">
+      <Filter>Source Files\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ipc\mcp_server.cpp">
+      <Filter>Source Files\ipc</Filter>
+    </ClCompile>
+    <ClCompile Include="src\command\command_handlers.cpp">
+      <Filter>Source Files\command</Filter>
+    </ClCompile>
+    <ClCompile Include="src\utils\output_callbacks.cpp">
+      <Filter>Source Files\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\dllmain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\pch.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\windbgmcpExt.def">
+      <Filter>Source Files</Filter>
+    </None>
+  </ItemGroup>
+</Project> 

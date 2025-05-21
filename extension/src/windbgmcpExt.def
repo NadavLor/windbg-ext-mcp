@@ -1,0 +1,10 @@
+LIBRARY "windbgmcpExt"
+EXPORTS
+    DebugExtensionInitialize
+    DebugExtensionUninitialize
+    help
+    objecttypes
+    hello
+    mcpstart
+    mcpstop
+    mcpstatus
