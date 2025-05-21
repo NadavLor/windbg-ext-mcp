@@ -102,6 +102,8 @@ The extension provides access to the following functionality:
 | `!address [-f:PROTECTION]` | Display memory regions with optional protection filtering |
 | `!handle [addr] [flags]` | Display handle information |
 | `!for_each_module <command>` | Execute a command for each loaded module |
+| `switch_process <addr> [save_previous]` | Switch to specified process and optionally save previous context |
+| `restore_process_context` | Restore the previously saved process context |
 
 ## Troubleshooting
 
@@ -126,6 +128,44 @@ The extension provides access to the following functionality:
 - Enable debug logging in the MCP server by setting the `DEBUG=true` environment variable
 - Review the console output of the MCP server for error messages and connection status
 
+### Process Context Management
+
+The extension includes intelligent process context management:
+
+- All commands that change process context will automatically save and restore the original context
+- The `switch_process` command includes an option to save the previous context (`save_previous=True` by default)
+- Use `restore_process_context` to switch back to a previously saved process context
+- Commands that modify process context in specialized handlers (`!process`, `!dlls`, `!handle`) all maintain context integrity
+- Thread-safe implementation ensures reliable context switching even in multi-threaded scenarios
+
+This prevents the common issue of commands changing debugging context and not restoring it, which can lead to confusing results in subsequent commands.
+
+### Command Validation
+
+The extension includes a comprehensive command validation system:
+
+- All commands are validated before execution to prevent errors and security issues
+- Potentially dangerous commands (like quit, kill, detach) are blocked
+- Parameters are validated for correct format and range
+- Long-running or resource-intensive commands are identified and handled appropriately
+- Specific command handlers perform additional validation for their parameters
+
+This validation system provides several benefits:
+- Prevents accidental termination of debugging sessions
+- Reduces errors from malformed commands
+- Provides more helpful error messages when commands fail
+- Protects against potentially harmful operations
+- Improves overall stability of debugging sessions
+
+### Timeouts and Performance
+
+Long-running commands have increased timeouts:
+- Standard commands: 30 seconds
+- Module listing: 60 seconds
+- Handle enumeration: 120 seconds
+
+Commands with potentially very large outputs (like `!handle` with the 'f' flag) include automatic pagination to prevent overwhelming the client.
+
 ## Advanced Usage
 
 ### Custom Command Handlers
@@ -137,15 +177,6 @@ The MCP server includes specialized handlers for common debugging scenarios:
 - Module enumeration
 - Handle inspection
 - Symbol resolution
-
-### Timeouts and Performance
-
-Long-running commands have increased timeouts:
-- Standard commands: 30 seconds
-- Module listing: 60 seconds
-- Handle enumeration: 120 seconds
-
-Commands with potentially very large outputs (like `!handle` with the 'f' flag) include automatic pagination to prevent overwhelming the client.
 
 ## License
 

@@ -47,6 +47,7 @@ AVAILABLE_TOOLS = [
     "get_peb",
     "get_teb",
     "switch_process",
+    "restore_process_context",
     "list_threads",
     "switch_thread",
     "get_interrupt",
@@ -188,13 +189,21 @@ async def list_processes(ctx: Context, random_string=None):
     """List all processes in the current debugging session"""
     logger.debug("Listing processes")
     try:
-        # Use our improved handler for process commands
+        # Use our improved handler for process commands with a longer timeout
         from commands.command_handlers import handle_process_command
-        return handle_process_command("!process 0 0", timeout_ms=60000)
+        result = handle_process_command("!process 0 0", timeout_ms=60000)
+        
+        # Ensure we're returning a string, not a dictionary
+        if isinstance(result, dict):
+            if "error" in result:
+                return f"Error: {result['error']}"
+            return str(result)
+        
+        return result
     except Exception as e:
         logger.error(f"Error listing processes: {e}")
         logger.error(traceback.format_exc())
-        return {"error": str(e)}
+        return f"Error: {str(e)}"
 
 @mcp.tool()
 async def get_peb(ctx: Context, random_string=None):
@@ -221,14 +230,51 @@ async def get_teb(ctx: Context, random_string=None):
         return {"error": str(e)}
 
 @mcp.tool()
-async def switch_process(ctx: Context, address: str):
+async def switch_process(ctx: Context, address: str, save_previous: bool = True):
     """Switch to the specified process by address"""
     logger.debug(f"Switching to process at {address}")
     try:
+        # Import context handling functions
+        from commands.command_handlers import save_process_context, restore_process_context
+        
+        # Save the current process context if requested
+        prev_context = None
+        if save_previous:
+            prev_context = save_process_context(timeout_ms=10000)
+            logger.debug(f"Saved previous process context: {prev_context}")
+        
         # The .process command switches the current process context
-        return execute_command(f".process {address}", timeout_ms=20000)
+        result = execute_command(f".process /r /p {address}", timeout_ms=20000)
+        
+        # If successful, add the previous context to the result
+        if result and not isinstance(result, dict):
+            # Add information about the previous context to the result
+            if prev_context and save_previous:
+                result += f"\n\nPrevious process context ({prev_context}) saved. Use restore_process_context to switch back."
+        
+        return result
     except Exception as e:
         logger.error(f"Error switching to process at '{address}': {e}")
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+@mcp.tool()
+async def restore_process_context(ctx: Context, random_string=None):
+    """Restore the previously saved process context"""
+    logger.debug("Restoring previous process context")
+    try:
+        # Import context restoration function
+        from commands.command_handlers import restore_process_context as restore_ctx
+        
+        # Try to restore the saved context
+        success = restore_ctx(timeout_ms=15000)
+        
+        if success:
+            return "Successfully restored the previous process context."
+        else:
+            return "No previous process context available to restore."
+    except Exception as e:
+        logger.error(f"Error restoring process context: {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e)}
 

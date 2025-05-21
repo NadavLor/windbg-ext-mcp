@@ -12,12 +12,33 @@
 #include <queue>
 #include <functional>
 #include <condition_variable>
+#include <vector>
+#include <map>
+#include <memory>
 #include "../include/json.hpp"
 
 using json = nlohmann::json;
 
 // Message handler function type
 using MessageHandler = std::function<json(const json&)>;
+
+// Client connection structure
+struct ClientConnection {
+    HANDLE hPipe;
+    std::thread thread;
+    std::atomic<bool> active;
+    std::queue<json> outgoingMessages;
+    std::mutex queueMutex;
+    std::condition_variable queueCondition;
+    
+    ClientConnection(HANDLE pipe) : hPipe(pipe), active(true) {}
+    ~ClientConnection() {
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            DisconnectNamedPipe(hPipe);
+            CloseHandle(hPipe);
+        }
+    }
+};
 
 class MCPServer {
 public:
@@ -36,21 +57,27 @@ public:
     // Register a command handler
     void RegisterHandler(const std::string& command, MessageHandler handler);
     
-    // Send a message to the client
-    bool SendMessage(const json& message);
+    // Send a message to a specific client
+    bool SendMessage(const json& message, HANDLE clientPipe);
+    
+    // Send a message to all clients
+    bool BroadcastMessage(const json& message);
 
 private:
     // Worker thread that handles pipe connections
     void PipeServerThread();
     
     // Handle a client connection
-    void HandleClient(HANDLE hPipe);
+    void HandleClient(std::shared_ptr<ClientConnection> client);
     
     // Process incoming message
     json ProcessMessage(const json& message);
     
     // Create a new pipe instance
     HANDLE CreatePipeInstance();
+    
+    // Clean up disconnected clients
+    void CleanupDisconnectedClients();
 
     std::string m_pipeName;
     std::atomic<bool> m_running;
@@ -59,12 +86,7 @@ private:
     // Message handlers for different commands
     std::map<std::string, MessageHandler> m_handlers;
     
-    // Queue for outgoing messages
-    std::queue<json> m_outgoingMessages;
-    std::mutex m_queueMutex;
-    std::condition_variable m_queueCondition;
-    
-    // Current active pipe handle
-    HANDLE m_activePipe;
-    std::mutex m_pipeMutex;
+    // Active client connections
+    std::vector<std::shared_ptr<ClientConnection>> m_clients;
+    std::mutex m_clientsMutex;
 }; 

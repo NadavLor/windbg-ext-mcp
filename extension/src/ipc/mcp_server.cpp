@@ -6,7 +6,7 @@
 // Buffer size for reading from the pipe
 constexpr DWORD BUFFER_SIZE = 4096;
 
-MCPServer::MCPServer() : m_running(false), m_activePipe(INVALID_HANDLE_VALUE) {
+MCPServer::MCPServer() : m_running(false) {
 }
 
 MCPServer::~MCPServer() {
@@ -29,23 +29,27 @@ bool MCPServer::Start(const std::string& pipeName) {
 }
 
 void MCPServer::Stop() {
+    if (!m_running)
+        return;
+        
     m_running = false;
     
-    // Wake up any waiting threads
-    m_queueCondition.notify_all();
+    // Wake up all client threads
+    {
+        std::lock_guard<std::mutex> lock(m_clientsMutex);
+        for (auto& client : m_clients) {
+            client->queueCondition.notify_all();
+            client->active = false;
+        }
+    }
     
     // Wait for server thread to terminate
     if (m_serverThread.joinable()) {
         m_serverThread.join();
     }
     
-    // Close active pipe if any
-    std::lock_guard<std::mutex> lock(m_pipeMutex);
-    if (m_activePipe != INVALID_HANDLE_VALUE) {
-        DisconnectNamedPipe(m_activePipe);
-        CloseHandle(m_activePipe);
-        m_activePipe = INVALID_HANDLE_VALUE;
-    }
+    // Wait for all client threads to terminate and clean up
+    CleanupDisconnectedClients();
 }
 
 bool MCPServer::IsRunning() const {
@@ -56,10 +60,34 @@ void MCPServer::RegisterHandler(const std::string& command, MessageHandler handl
     m_handlers[command] = handler;
 }
 
-bool MCPServer::SendMessage(const json& message) {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-    m_outgoingMessages.push(message);
-    m_queueCondition.notify_one();
+bool MCPServer::SendMessage(const json& message, HANDLE clientPipe) {
+    if (!m_running)
+        return false;
+        
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    for (auto& client : m_clients) {
+        if (client->hPipe == clientPipe) {
+            std::lock_guard<std::mutex> queueLock(client->queueMutex);
+            client->outgoingMessages.push(message);
+            client->queueCondition.notify_one();
+            return true;
+        }
+    }
+    
+    return false; // Client not found
+}
+
+bool MCPServer::BroadcastMessage(const json& message) {
+    if (!m_running)
+        return false;
+        
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    for (auto& client : m_clients) {
+        std::lock_guard<std::mutex> queueLock(client->queueMutex);
+        client->outgoingMessages.push(message);
+        client->queueCondition.notify_one();
+    }
+    
     return true;
 }
 
@@ -99,55 +127,72 @@ void MCPServer::PipeServerThread() {
         BOOL connected = ConnectNamedPipe(hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
         
         if (connected) {
-            dprintf("MCPServer: Client connected\n");
+            dprintf("MCPServer: New client connected\n");
             
-            // Set active pipe
+            // Create a new client connection
+            auto client = std::make_shared<ClientConnection>(hPipe);
+            
+            // Start a thread to handle this client
+            client->thread = std::thread(&MCPServer::HandleClient, this, client);
+            
+            // Add to clients list
             {
-                std::lock_guard<std::mutex> lock(m_pipeMutex);
-                m_activePipe = hPipe;
+                std::lock_guard<std::mutex> lock(m_clientsMutex);
+                m_clients.push_back(client);
             }
             
-            // Handle client connection
-            HandleClient(hPipe);
-            
-            // Reset active pipe
-            {
-                std::lock_guard<std::mutex> lock(m_pipeMutex);
-                m_activePipe = INVALID_HANDLE_VALUE;
-            }
-            
-            // Disconnect and close
-            FlushFileBuffers(hPipe);
-            DisconnectNamedPipe(hPipe);
-            CloseHandle(hPipe);
-            
-            dprintf("MCPServer: Client disconnected\n");
+            // Clean up any disconnected clients
+            CleanupDisconnectedClients();
         } else {
             // Failed to connect, close pipe and retry
             CloseHandle(hPipe);
         }
     }
+
+    // Clean up all clients when shutting down
+    CleanupDisconnectedClients();
 }
 
-void MCPServer::HandleClient(HANDLE hPipe) {
+void MCPServer::CleanupDisconnectedClients() {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    
+    // Check each client for active status
+    auto it = m_clients.begin();
+    while (it != m_clients.end()) {
+        auto client = *it;
+        
+        if (!client->active) {
+            // Client is no longer active, join thread and remove
+            if (client->thread.joinable()) {
+                client->thread.join();
+            }
+            
+            it = m_clients.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void MCPServer::HandleClient(std::shared_ptr<ClientConnection> client) {
     char buffer[BUFFER_SIZE];
     DWORD bytesRead;
     std::string messageBuffer;
     
     // Keep processing until client disconnects or server stops
-    while (m_running) {
+    while (m_running && client->active) {
         // Process outgoing messages first
         {
-            std::unique_lock<std::mutex> lock(m_queueMutex);
+            std::unique_lock<std::mutex> lock(client->queueMutex);
             
             // Wait for outgoing messages with a timeout
-            m_queueCondition.wait_for(lock, std::chrono::milliseconds(100), 
-                [this] { return !m_outgoingMessages.empty() || !m_running; });
+            client->queueCondition.wait_for(lock, std::chrono::milliseconds(100), 
+                [&client] { return !client->outgoingMessages.empty() || !client->active; });
             
             // Check if we have messages to send
-            if (!m_outgoingMessages.empty()) {
-                json message = m_outgoingMessages.front();
-                m_outgoingMessages.pop();
+            if (!client->outgoingMessages.empty()) {
+                json message = client->outgoingMessages.front();
+                client->outgoingMessages.pop();
                 lock.unlock();
                 
                 // Serialize the message
@@ -156,14 +201,15 @@ void MCPServer::HandleClient(HANDLE hPipe) {
                 // Send the message
                 DWORD bytesWritten;
                 BOOL success = WriteFile(
-                    hPipe,                   // Pipe handle
+                    client->hPipe,           // Pipe handle
                     messageStr.c_str(),      // Message buffer
                     (DWORD)messageStr.size(),// Message size
                     &bytesWritten,           // Bytes written
                     NULL);                   // Not overlapped
                 
                 if (!success || bytesWritten != messageStr.size()) {
-                    printf("MCPServer: Failed to write to pipe, error %d\n", GetLastError());
+                    dprintf("MCPServer: Failed to write to pipe, error %d\n", GetLastError());
+                    client->active = false;
                     return; // Disconnect on error
                 }
             }
@@ -172,20 +218,22 @@ void MCPServer::HandleClient(HANDLE hPipe) {
         // Check if there's data to read
         DWORD bytesAvail = 0;
         BOOL success = PeekNamedPipe(
-            hPipe,         // Pipe handle
-            NULL,          // Buffer (not needed for peek)
-            0,             // Buffer size
-            NULL,          // Bytes read (not needed)
-            &bytesAvail,   // Bytes available
-            NULL);         // Bytes left (not needed)
+            client->hPipe,   // Pipe handle
+            NULL,            // Buffer (not needed for peek)
+            0,               // Buffer size
+            NULL,            // Bytes read (not needed)
+            &bytesAvail,     // Bytes available
+            NULL);           // Bytes left (not needed)
         
         if (!success) {
             DWORD error = GetLastError();
             if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
                 // Client disconnected
+                client->active = false;
                 return;
             }
             dprintf("MCPServer: PeekNamedPipe failed with error %d\n", error);
+            client->active = false;
             return;
         }
         
@@ -196,19 +244,21 @@ void MCPServer::HandleClient(HANDLE hPipe) {
         
         // Read data from the pipe
         success = ReadFile(
-            hPipe,         // Pipe handle
-            buffer,        // Buffer
-            BUFFER_SIZE,   // Buffer size
-            &bytesRead,    // Bytes read
-            NULL);         // Not overlapped
+            client->hPipe,   // Pipe handle
+            buffer,          // Buffer
+            BUFFER_SIZE,     // Buffer size
+            &bytesRead,      // Bytes read
+            NULL);           // Not overlapped
         
         if (!success || bytesRead == 0) {
             DWORD error = GetLastError();
             if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
                 // Client disconnected
+                client->active = false;
                 return;
             }
             dprintf("MCPServer: ReadFile failed with error %d\n", error);
+            client->active = false;
             return;
         }
         
@@ -228,11 +278,11 @@ void MCPServer::HandleClient(HANDLE hPipe) {
                 // Process the message
                 json response = ProcessMessage(jsonMessage);
                 
-                // Send the response
+                // Send the response to this client
                 std::string responseStr = response.dump() + "\n";
                 DWORD bytesWritten;
                 success = WriteFile(
-                    hPipe,                    // Pipe handle
+                    client->hPipe,            // Pipe handle
                     responseStr.c_str(),      // Response buffer
                     (DWORD)responseStr.size(),// Response size
                     &bytesWritten,            // Bytes written
@@ -240,6 +290,7 @@ void MCPServer::HandleClient(HANDLE hPipe) {
                 
                 if (!success || bytesWritten != responseStr.size()) {
                     dprintf("MCPServer: Failed to write response, error %d\n", GetLastError());
+                    client->active = false;
                     return; // Disconnect on error
                 }
             }
@@ -256,7 +307,7 @@ void MCPServer::HandleClient(HANDLE hPipe) {
                 std::string errorStr = errorResponse.dump() + "\n";
                 DWORD bytesWritten;
                 WriteFile(
-                    hPipe,                  // Pipe handle
+                    client->hPipe,          // Pipe handle
                     errorStr.c_str(),       // Error buffer
                     (DWORD)errorStr.size(), // Error size
                     &bytesWritten,          // Bytes written
@@ -264,6 +315,10 @@ void MCPServer::HandleClient(HANDLE hPipe) {
             }
         }
     }
+    
+    // Mark client as inactive when exiting
+    client->active = false;
+    dprintf("MCPServer: Client handler thread exiting\n");
 }
 
 json MCPServer::ProcessMessage(const json& message) {

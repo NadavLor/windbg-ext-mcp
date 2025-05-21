@@ -6,6 +6,9 @@
 #include <future>
 #include <chrono>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 // ExtensionApis is now forward-declared in pch.h and defined in types.cpp
 
@@ -163,10 +166,11 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
         unsigned int timeout = args.value("timeout_ms", 30000u);  // Increased default timeout to 30 seconds
         
         if (command.empty()) {
-            return CreateErrorResponse(
+            return CreateDetailedErrorResponse(
                 message.value("id", 0),
                 "execute_command",
-                "Command is required"
+                "Command is required",
+                ErrorCategory::CommandSyntax
             );
         }
         
@@ -188,38 +192,78 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
             timeout = (timeout > 60000u) ? timeout : 60000u;  // Minimum 60-second timeout for handle command
         }
         
-        std::string output = ExecuteWinDbgCommand(command, timeout);
-        
-        // Check if the output is empty or contains error messages
-        if (output.empty()) {
-            return CreateErrorResponse(
+        try {
+            std::string output = ExecuteWinDbgCommand(command, timeout);
+            
+            // Check if the output is empty or contains error messages
+            if (output.empty()) {
+                return CreateDetailedErrorResponse(
+                    message.value("id", 0),
+                    "execute_command",
+                    "Command returned no output. The command might be invalid or unsupported.",
+                    ErrorCategory::Unknown,
+                    S_OK,
+                    "Check if the command is valid in the current context."
+                );
+            }
+            
+            // Check for common error patterns
+            if (output.find("Usage:") != std::string::npos && 
+                output.find("options") != std::string::npos) {
+                return CreateDetailedErrorResponse(
+                    message.value("id", 0),
+                    "execute_command",
+                    "Command syntax error: " + output,
+                    ErrorCategory::CommandSyntax,
+                    E_INVALIDARG,
+                    "Check the command syntax and arguments."
+                );
+            }
+            
+            return CreateSuccessResponse(
                 message.value("id", 0),
                 "execute_command",
-                "Command returned no output. The command might be invalid or unsupported."
+                output
             );
         }
-        
-        // Check for common error patterns
-        if (output.find("Usage:") != std::string::npos && 
-            output.find("options") != std::string::npos) {
-            return CreateErrorResponse(
+        catch (const std::exception& e) {
+            std::string errorMsg = e.what();
+            
+            // Extract HRESULT if present
+            HRESULT hr = S_OK;
+            size_t hrPos = errorMsg.find("HRESULT: 0x");
+            if (hrPos != std::string::npos) {
+                try {
+                    std::string hrStr = errorMsg.substr(hrPos + 10, 8);
+                    hr = std::stoul(hrStr, nullptr, 16);
+                }
+                catch (...) {
+                    // Ignore errors in HRESULT parsing
+                }
+            }
+            
+            // Classify the error
+            ErrorCategory category = ClassifyError(errorMsg, hr);
+            
+            // Get suggestion for this error type
+            std::string suggestion = GetSuggestionForError(category, command, hr);
+            
+            return CreateDetailedErrorResponse(
                 message.value("id", 0),
                 "execute_command",
-                "Command syntax error: " + output
+                errorMsg,
+                category,
+                hr,
+                suggestion
             );
         }
-        
-        return CreateSuccessResponse(
-            message.value("id", 0),
-            "execute_command",
-            output
-        );
     }
     catch (const std::exception& e) {
-        return CreateErrorResponse(
+        return CreateDetailedErrorResponse(
             message.value("id", 0),
             "execute_command",
-            std::string("Command failed: ") + e.what()
+            std::string("Command failed: ") + e.what(),
+            ErrorCategory::InternalError
         );
     }
 }
@@ -251,17 +295,45 @@ json CommandHandlers::HandleProcessCommand(int id, const std::string& command, u
                 }
             }
             
-            return CreateErrorResponse(
+            return CreateDetailedErrorResponse(
                 id,
                 "execute_command",
-                "Process command returned no output. The process address might be invalid."
+                "Process command returned no output. The process address might be invalid.",
+                ErrorCategory::ExecutionContext,
+                E_INVALIDARG,
+                "Check that the process address is valid and that you are in the correct debugging context."
             );
         }
         
         return CreateSuccessResponse(id, "execute_command", output);
     }
     catch (const std::exception& e) {
-        return CreateErrorResponse(id, "execute_command", std::string("Process command failed: ") + e.what());
+        std::string errorMsg = e.what();
+        
+        // Extract HRESULT if present
+        HRESULT hr = S_OK;
+        size_t hrPos = errorMsg.find("HRESULT: 0x");
+        if (hrPos != std::string::npos) {
+            try {
+                std::string hrStr = errorMsg.substr(hrPos + 10, 8);
+                hr = std::stoul(hrStr, nullptr, 16);
+            }
+            catch (...) {
+                // Ignore errors in HRESULT parsing
+            }
+        }
+        
+        // Classify the error
+        ErrorCategory category = ClassifyError(errorMsg, hr);
+        
+        return CreateDetailedErrorResponse(
+            id, 
+            "execute_command", 
+            std::string("Process command failed: ") + e.what(),
+            category,
+            hr,
+            GetSuggestionForError(category, command, hr)
+        );
     }
 }
 
@@ -296,17 +368,45 @@ json CommandHandlers::HandleDllsCommand(int id, const std::string& command, unsi
         }
         
         if (output.empty()) {
-            return CreateErrorResponse(
+            return CreateDetailedErrorResponse(
                 id,
                 "execute_command",
-                "DLLs command returned no output. Try using '!process <address>' first to set the context."
+                "DLLs command returned no output. Try using '!process <address>' first to set the context.",
+                ErrorCategory::ExecutionContext,
+                S_OK,
+                "First set the process context with '!process <address>' or '.process /r /p <address>', then run '!dlls'"
             );
         }
         
         return CreateSuccessResponse(id, "execute_command", output);
     }
     catch (const std::exception& e) {
-        return CreateErrorResponse(id, "execute_command", std::string("DLLs command failed: ") + e.what());
+        std::string errorMsg = e.what();
+        
+        // Extract HRESULT if present
+        HRESULT hr = S_OK;
+        size_t hrPos = errorMsg.find("HRESULT: 0x");
+        if (hrPos != std::string::npos) {
+            try {
+                std::string hrStr = errorMsg.substr(hrPos + 10, 8);
+                hr = std::stoul(hrStr, nullptr, 16);
+            }
+            catch (...) {
+                // Ignore errors in HRESULT parsing
+            }
+        }
+        
+        // Classify the error
+        ErrorCategory category = ClassifyError(errorMsg, hr);
+        
+        return CreateDetailedErrorResponse(
+            id, 
+            "execute_command", 
+            std::string("DLLs command failed: ") + e.what(),
+            category,
+            hr,
+            GetSuggestionForError(category, command, hr)
+        );
     }
 }
 
@@ -340,137 +440,274 @@ json CommandHandlers::HandleAddressCommand(int id, const std::string& command, u
                 }
             }
             
-            return CreateErrorResponse(
+            return CreateDetailedErrorResponse(
                 id,
                 "execute_command",
-                "Address command has invalid arguments. Try using '!address' without flags first."
+                "Address command has invalid arguments.",
+                ErrorCategory::CommandSyntax,
+                E_INVALIDARG,
+                "Try using '!address' without flags first or check the command syntax with '!help address'"
             );
         }
         
         if (output.empty()) {
-            return CreateErrorResponse(
+            return CreateDetailedErrorResponse(
                 id,
                 "execute_command",
-                "Address command returned no output."
+                "Address command returned no output.",
+                ErrorCategory::Unknown,
+                S_OK,
+                "The command might not be applicable in the current context."
             );
         }
         
         return CreateSuccessResponse(id, "execute_command", output);
     }
     catch (const std::exception& e) {
-        return CreateErrorResponse(id, "execute_command", std::string("Address command failed: ") + e.what());
+        std::string errorMsg = e.what();
+        
+        // Extract HRESULT if present
+        HRESULT hr = S_OK;
+        size_t hrPos = errorMsg.find("HRESULT: 0x");
+        if (hrPos != std::string::npos) {
+            try {
+                std::string hrStr = errorMsg.substr(hrPos + 10, 8);
+                hr = std::stoul(hrStr, nullptr, 16);
+            }
+            catch (...) {
+                // Ignore errors in HRESULT parsing
+            }
+        }
+        
+        // Classify the error
+        ErrorCategory category = ClassifyError(errorMsg, hr);
+        
+        return CreateDetailedErrorResponse(
+            id, 
+            "execute_command", 
+            std::string("Address command failed: ") + e.what(),
+            category,
+            hr,
+            GetSuggestionForError(category, command, hr)
+        );
     }
 }
 
 // Helper class for command execution with timeout
 class CommandExecutor {
 public:
-    static std::string ExecuteWithTimeout(const std::string& command, unsigned int timeoutMs) {
+    struct CommandResult {
+        std::string output;
+        HRESULT hr;
+        bool hasTimedOut;
+        
+        CommandResult() : output(""), hr(S_OK), hasTimedOut(false) {}
+        CommandResult(const std::string& out, HRESULT result = S_OK, bool timedOut = false)
+            : output(out), hr(result), hasTimedOut(timedOut) {}
+    };
+    
+    static CommandResult ExecuteWithTimeout(const std::string& command, unsigned int timeoutMs) {
+        CommandResult result;
+        
         // Create a debug client and control interface
         CComPtr<IDebugClient> client;
         HRESULT hr = DebugCreate(__uuidof(IDebugClient), (void**)&client);
         if (FAILED(hr)) {
-            throw std::runtime_error("Failed to create debug client");
+            result.hr = hr;
+            result.output = "Failed to create debug client";
+            return result;
         }
         
         // Get debug control interface
         CComQIPtr<IDebugControl> control(client);
         if (!control) {
-            throw std::runtime_error("Failed to get debug control interface");
+            result.hr = E_NOINTERFACE;
+            result.output = "Failed to get debug control interface";
+            return result;
         }
         
         // Set up output callbacks
         CComPtr<OutputCallbacks> callbacks = new OutputCallbacks();
         client->SetOutputCallbacks(callbacks);
         
-        // Execute the command asynchronously with timeout
-        auto task = std::async(std::launch::async, [&]() {
-            HRESULT hr = control->Execute(DEBUG_OUTCTL_ALL_CLIENTS, command.c_str(), DEBUG_EXECUTE_DEFAULT);
-            if (FAILED(hr)) {
-                throw std::runtime_error("Failed to execute command");
+        // Variables for thread synchronization
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool commandCompleted = false;
+        bool commandRunning = true;
+        
+        // Execute the command in a separate thread
+        auto task = std::thread([&]() {
+            CommandResult taskResult;
+            
+            // Execute the command
+            taskResult.hr = control->Execute(DEBUG_OUTCTL_ALL_CLIENTS, command.c_str(), DEBUG_EXECUTE_DEFAULT);
+            
+            // If command execution failed, get detailed error information
+            if (FAILED(taskResult.hr)) {
+                // Format a clear error message with the HRESULT
+                char errorMsg[256] = {0};
+                sprintf_s(errorMsg, "Command execution failed with HRESULT = 0x%08X", taskResult.hr);
+                
+                // Map common HRESULTs to more descriptive messages
+                switch (taskResult.hr) {
+                    case E_INVALIDARG:
+                        strcat_s(errorMsg, " - Invalid argument");
+                        break;
+                    case E_ACCESSDENIED:
+                        strcat_s(errorMsg, " - Access denied");
+                        break;
+                    case E_OUTOFMEMORY:
+                        strcat_s(errorMsg, " - Out of memory");
+                        break;
+                    case E_NOTIMPL:
+                        strcat_s(errorMsg, " - Not implemented");
+                        break;
+                    case E_NOINTERFACE:
+                        strcat_s(errorMsg, " - Interface not supported");
+                        break;
+                    case E_FAIL:
+                        strcat_s(errorMsg, " - Unspecified error");
+                        break;
+                }
+                
+                taskResult.output = errorMsg;
+                
+                // Include any output that might have been generated before the error
+                std::string cmdOutput = callbacks->GetOutput();
+                if (!cmdOutput.empty()) {
+                    taskResult.output += "\nCommand output: " + cmdOutput;
+                }
+            } else {
+                taskResult.output = callbacks->GetOutput();
             }
-            return callbacks->GetOutput();
+            
+            // Signal completion and store result
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                result = taskResult;
+                commandCompleted = true;
+                commandRunning = false;
+            }
+            cv.notify_one();
         });
         
-        // Wait for the task to complete with timeout
-        auto status = task.wait_for(std::chrono::milliseconds(timeoutMs));
+        // Wait for the command to complete with timeout
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            if (!cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&commandCompleted]{ return commandCompleted; })) {
+                // Timeout occurred
+                
+                // Set timeout result
+                result.hasTimedOut = true;
+                result.output = "Command execution timed out after " + std::to_string(timeoutMs) + "ms";
+                
+                // Mark command as no longer running but wait for thread to actually terminate
+                commandRunning = false;
+            }
+        }
+        
+        // If command timed out, we need to force interrupt the execution
+        if (result.hasTimedOut) {
+            // Attempt to cleanly interrupt the command
+            // Use IDebugControl::SetInterrupt instead of SetInterruptEvent
+            control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+            
+            // Give a short grace period for the command to terminate
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                cv.wait_for(lock, std::chrono::milliseconds(500), [&commandRunning]{ return !commandRunning; });
+            }
+        }
         
         // Reset output callbacks
-        client->SetOutputCallbacks(NULL);
-        
-        if (status == std::future_status::timeout) {
-            throw std::runtime_error("Command execution timed out after " + std::to_string(timeoutMs) + "ms");
+        if (client) {
+            client->SetOutputCallbacks(NULL);
         }
         
-        try {
-            return task.get();
+        // Wait for thread to complete (could be dangerous if thread is truly hung)
+        if (task.joinable()) {
+            // Give it a reasonable timeout
+            std::thread([](std::thread&& t) {
+                if (t.joinable()) {
+                    // Try to join for a short time
+                    auto future = std::async(std::launch::async, &std::thread::join, &t);
+                    if (future.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
+                        // Thread is hung, we can't safely terminate it in Windows
+                        // Just detach so we don't block, but this may leak resources
+                        t.detach();
+                    }
+                }
+            }, std::move(task)).detach();
         }
-        catch (const std::exception& e) {
-            throw std::runtime_error(std::string("Command execution failed: ") + e.what());
-        }
+        
+        return result;
     }
 };
 
 // Helper function to execute a WinDBG command and capture output
 std::string CommandHandlers::ExecuteWinDbgCommand(const std::string& command, unsigned int timeoutMs) {
-    try {
-        std::string output = CommandExecutor::ExecuteWithTimeout(command, timeoutMs);
-        
-        // Check for empty output
-        if (output.empty() || output == "NONE" || output == "None") {
-            // For certain critical commands, try again with a different approach
-            if (command.find("!process") != std::string::npos) {
-                // Try with .process command instead
-                size_t addrPos = command.find(" ");
-                if (addrPos != std::string::npos) {
-                    std::string processAddr = command.substr(addrPos + 1);
-                    size_t flagPos = processAddr.find(" ");
-                    if (flagPos != std::string::npos) {
-                        processAddr = processAddr.substr(0, flagPos);
-                    }
-                    
-                    std::string altCmd = ".process /r /p " + processAddr;
-                    std::string altOutput = CommandExecutor::ExecuteWithTimeout(altCmd, timeoutMs);
-                    
-                    if (!altOutput.empty()) {
-                        output = "Process context: " + altOutput;
-                    }
-                }
-            }
-            else if (command.find("!address") != std::string::npos && command.find("-f:") != std::string::npos) {
-                // For address commands with filtering that might not work
-                std::string baseCmd = "!address";
-                output = "Command with filter returned no results. Try: " + 
-                         CommandExecutor::ExecuteWithTimeout(baseCmd, timeoutMs / 2);
-            }
-            
-            // If still empty, provide a more helpful message
-            if (output.empty()) {
-                output = "Command returned no output. This could indicate:\n"
-                         "1. Invalid command syntax\n"
-                         "2. Command not applicable in current context\n"
-                         "3. Extension not loaded\n"
-                         "Check command help for proper usage.";
-            }
-        }
-        
-        return output;
+    CommandExecutor::CommandResult result = CommandExecutor::ExecuteWithTimeout(command, timeoutMs);
+    
+    // Check for timeout
+    if (result.hasTimedOut) {
+        throw std::runtime_error("Command execution timed out after " + std::to_string(timeoutMs) + "ms");
     }
-    catch (const std::exception& e) {
-        // Provide more context about the error
-        std::string errorMsg = e.what();
+    
+    // Check for execution failures
+    if (FAILED(result.hr)) {
+        std::string errorMsg = result.output.empty() ? 
+            "Unknown error" : result.output;
         std::string enhancedError = "Error executing command '" + command + "': " + errorMsg;
         
-        // Suggest alternatives for common errors
-        if (errorMsg.find("timed out") != std::string::npos) {
-            enhancedError += "\nThe command might be blocked waiting for user input or processing a large dataset.";
-        }
-        else if (errorMsg.find("debug client") != std::string::npos) {
-            enhancedError += "\nThere might be an issue with the WinDbg debugging session.";
-        }
+        // Include error code for more detailed diagnostics
+        char hrStr[16];
+        sprintf_s(hrStr, "0x%08X", result.hr);
+        enhancedError += " (HRESULT: " + std::string(hrStr) + ")";
         
         throw std::runtime_error(enhancedError);
     }
+    
+    // Check for empty output
+    if (result.output.empty() || result.output == "NONE" || result.output == "None") {
+        // For certain critical commands, try again with a different approach
+        if (command.find("!process") != std::string::npos) {
+            // Try with .process command instead
+            size_t addrPos = command.find(" ");
+            if (addrPos != std::string::npos) {
+                std::string processAddr = command.substr(addrPos + 1);
+                size_t flagPos = processAddr.find(" ");
+                if (flagPos != std::string::npos) {
+                    processAddr = processAddr.substr(0, flagPos);
+                }
+                
+                std::string altCmd = ".process /r /p " + processAddr;
+                CommandExecutor::CommandResult altResult = CommandExecutor::ExecuteWithTimeout(altCmd, timeoutMs);
+                
+                if (!FAILED(altResult.hr) && !altResult.output.empty()) {
+                    return "Process context: " + altResult.output;
+                }
+            }
+        }
+        else if (command.find("!address") != std::string::npos && command.find("-f:") != std::string::npos) {
+            // For address commands with filtering that might not work
+            std::string baseCmd = "!address";
+            CommandExecutor::CommandResult altResult = CommandExecutor::ExecuteWithTimeout(baseCmd, timeoutMs / 2);
+            
+            if (!FAILED(altResult.hr) && !altResult.output.empty()) {
+                return "Command with filter returned no results. Try: " + altResult.output;
+            }
+        }
+        
+        // If still empty, provide a more helpful message
+        return "Command returned no output. This could indicate:\n"
+               "1. Invalid command syntax\n"
+               "2. Command not applicable in current context\n"
+               "3. Extension not loaded\n"
+               "Check command help for proper usage.";
+    }
+    
+    return result.output;
 }
 
 json CommandHandlers::CreateSuccessResponse(int id, const std::string& command, const std::string& output) {
@@ -578,5 +815,152 @@ json CommandHandlers::ForEachModuleHandler(const json& message) {
             "for_each_module",
             std::string("Command failed: ") + e.what()
         );
+    }
+}
+
+json CommandHandlers::CreateDetailedErrorResponse(
+    int id,
+    const std::string& command,
+    const std::string& error,
+    ErrorCategory category,
+    HRESULT errorCode,
+    const std::string& suggestion
+) {
+    json response = {
+        {"id", id},
+        {"type", "response"},
+        {"command", command},
+        {"status", "error"},
+        {"error", error},
+        {"error_category", GetErrorCategoryString(category)},
+        {"error_code", errorCode}
+    };
+    
+    if (!suggestion.empty()) {
+        response["suggestion"] = suggestion;
+    }
+    
+    return response;
+}
+
+ErrorCategory CommandHandlers::ClassifyError(const std::string& errorMessage, HRESULT errorCode) {
+    // Classify errors based on the error message and HRESULT code
+    if (errorMessage.find("timed out") != std::string::npos) {
+        return ErrorCategory::Timeout;
+    }
+    
+    if (errorMessage.find("debug client") != std::string::npos ||
+        errorMessage.find("control interface") != std::string::npos) {
+        return ErrorCategory::ApiError;
+    }
+    
+    if (errorMessage.find("syntax") != std::string::npos ||
+        errorMessage.find("Usage:") != std::string::npos ||
+        errorMessage.find("Invalid argument") != std::string::npos) {
+        return ErrorCategory::CommandSyntax;
+    }
+    
+    if (errorMessage.find("not found") != std::string::npos ||
+        errorMessage.find("cannot resolve") != std::string::npos ||
+        errorMessage.find("no symbols") != std::string::npos) {
+        return ErrorCategory::SymbolResolution;
+    }
+    
+    if (errorMessage.find("extension") != std::string::npos &&
+        (errorMessage.find("not loaded") != std::string::npos ||
+         errorMessage.find("missing") != std::string::npos)) {
+        return ErrorCategory::ExtensionLoad;
+    }
+    
+    if (errorMessage.find("access violation") != std::string::npos ||
+        errorMessage.find("invalid memory") != std::string::npos ||
+        errorMessage.find("cannot access") != std::string::npos) {
+        return ErrorCategory::MemoryAccess;
+    }
+    
+    if (errorMessage.find("wrong context") != std::string::npos ||
+        errorMessage.find("kernel mode only") != std::string::npos ||
+        errorMessage.find("user mode only") != std::string::npos ||
+        errorMessage.find("not debugging") != std::string::npos) {
+        return ErrorCategory::ExecutionContext;
+    }
+    
+    // Check HRESULT codes for more detailed classification
+    switch (errorCode) {
+        case E_INVALIDARG:
+            return ErrorCategory::CommandSyntax;
+        case E_ACCESSDENIED:
+            return ErrorCategory::MemoryAccess;
+        case E_OUTOFMEMORY:
+            return ErrorCategory::InternalError;
+        case E_NOINTERFACE:
+            return ErrorCategory::ApiError;
+        case E_ABORT:
+            return ErrorCategory::Timeout;
+        case E_FAIL:
+            // Generic failure, need to rely on the message
+            break;
+    }
+    
+    return ErrorCategory::Unknown;
+}
+
+std::string CommandHandlers::GetErrorCategoryString(ErrorCategory category) {
+    switch (category) {
+        case ErrorCategory::None: return "none";
+        case ErrorCategory::CommandSyntax: return "command_syntax";
+        case ErrorCategory::ExecutionContext: return "execution_context";
+        case ErrorCategory::Timeout: return "timeout";
+        case ErrorCategory::SymbolResolution: return "symbol_resolution";
+        case ErrorCategory::MemoryAccess: return "memory_access";
+        case ErrorCategory::ExtensionLoad: return "extension_load";
+        case ErrorCategory::InternalError: return "internal_error";
+        case ErrorCategory::ApiError: return "api_error";
+        case ErrorCategory::Unknown:
+        default:
+            return "unknown";
+    }
+}
+
+std::string CommandHandlers::GetSuggestionForError(ErrorCategory category, const std::string& command, HRESULT errorCode) {
+    switch (category) {
+        case ErrorCategory::CommandSyntax:
+            return "Try checking the command syntax with '!help " + command + "' or check WinDbg documentation.";
+            
+        case ErrorCategory::ExecutionContext:
+            if (command.find("!") == 0) {
+                return "This extension command might only be valid in a specific context (user mode or kernel mode).";
+            }
+            return "This command might only be valid in a specific debugging context.";
+            
+        case ErrorCategory::Timeout:
+            return "The command might be blocked waiting for user input or processing a large dataset. Consider increasing the timeout or using a more specific command.";
+            
+        case ErrorCategory::SymbolResolution:
+            return "Check symbol path with '.sympath' and reload symbols with '.reload'. Make sure symbols are available for the module.";
+            
+        case ErrorCategory::MemoryAccess:
+            return "The memory address might be invalid or not accessible in the current context. Verify the address is correct.";
+            
+        case ErrorCategory::ExtensionLoad:
+            if (command.find("!") == 0) {
+                std::string extName = command.substr(1);
+                size_t pos = extName.find(' ');
+                if (pos != std::string::npos) {
+                    extName = extName.substr(0, pos);
+                }
+                return "The extension '" + extName + "' might need to be loaded with '.load' before use.";
+            }
+            return "Make sure necessary extensions are loaded with '.load'.";
+            
+        case ErrorCategory::ApiError:
+            return "There might be an issue with the WinDbg debugging session. Try restarting the debugging session.";
+            
+        case ErrorCategory::InternalError:
+            return "An internal error occurred in the extension. Please report this issue.";
+            
+        case ErrorCategory::Unknown:
+        default:
+            return "";
     }
 } 

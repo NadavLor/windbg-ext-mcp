@@ -15,6 +15,34 @@ WINDBG_EXTENSION_APIS64 ExtensionApis{ sizeof(ExtensionApis) };
 // Global MCP server instance
 std::unique_ptr<MCPServer> g_mcpServer;
 
+// Flag to track if the DLL is being unloaded
+std::atomic<bool> g_dllUnloading(false);
+
+// Event to signal clean shutdown
+HANDLE g_shutdownEvent = NULL;
+
+// Function to ensure cleanup on process exit
+// Signature for WAITORTIMERCALLBACK is VOID CALLBACK (PVOID, BOOLEAN)
+VOID CALLBACK CleanupRoutine(PVOID Parameter, BOOLEAN TimerOrWaitFired) {
+	// If a clean shutdown hasn't already been performed, do it now
+	if (!g_dllUnloading.exchange(true)) {
+		dprintf("WinDbg MCP Extension: Process termination detected, cleaning up resources...\n");
+		
+		// Stop the MCP server and free resources
+		if (g_mcpServer) {
+			g_mcpServer->Stop();
+			g_mcpServer.reset();
+		}
+		
+		// Signal the shutdown event if it exists
+		if (g_shutdownEvent != NULL) {
+			SetEvent(g_shutdownEvent);
+			CloseHandle(g_shutdownEvent);
+			g_shutdownEvent = NULL;
+		}
+	}
+}
+
 HRESULT __stdcall DebugExtensionInitialize(PULONG version, PULONG flags) {
 	CComPtr<IDebugClient> client;
 	auto hr = DebugCreate(__uuidof(IDebugClient), (void**)&client);
@@ -28,6 +56,19 @@ HRESULT __stdcall DebugExtensionInitialize(PULONG version, PULONG flags) {
 
 	*version = DEBUG_EXTENSION_VERSION(1, 0);
 	*flags = 0;
+
+	// Create shutdown event
+	g_shutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (g_shutdownEvent == NULL) {
+		dprintf("Warning: Failed to create shutdown event\n");
+	}
+	
+	// Register process exit callback for cleanup
+	PVOID token = NULL;
+	if (!RegisterWaitForSingleObject(&token, GetCurrentProcess(),
+		CleanupRoutine, NULL, INFINITE, WT_EXECUTEONLYONCE)) {
+		dprintf("Warning: Failed to register process exit callback\n");
+	}
 
 	// Initialize MCP server
 	g_mcpServer = std::make_unique<MCPServer>();
@@ -127,6 +168,7 @@ STDAPI mcpstop(IDebugClient* client, PCSTR args) {
 		return S_OK;
 	}
 	
+	dprintf("Stopping MCP server...\n");
 	g_mcpServer->Stop();
 	dprintf("MCP server stopped\n");
 	return S_OK;
@@ -150,11 +192,34 @@ STDAPI mcpstatus(IDebugClient* client, PCSTR args) {
 
 extern "C"
 void CALLBACK DebugExtensionUninitialize(void) {
+	// Set flag to indicate unloading
+	g_dllUnloading.store(true);
+	
+	// Wait for a short time to let other threads complete operations
+	const DWORD CLEANUP_TIMEOUT_MS = 5000; // 5 seconds
+	dprintf("WinDbg MCP Extension: Uninitializing...\n");
+	
 	// Clean up MCP server
 	if (g_mcpServer) {
+		dprintf("WinDbg MCP Extension: Stopping MCP server...\n");
 		g_mcpServer->Stop();
 		g_mcpServer.reset();
+		dprintf("WinDbg MCP Extension: MCP server stopped\n");
 	}
+	
+	// Signal and wait on shutdown event if it exists
+	if (g_shutdownEvent != NULL) {
+		SetEvent(g_shutdownEvent);
+		
+		// Wait briefly for pending operations to complete
+		WaitForSingleObject(g_shutdownEvent, CLEANUP_TIMEOUT_MS);
+		
+		// Close the event handle
+		CloseHandle(g_shutdownEvent);
+		g_shutdownEvent = NULL;
+	}
+	
+	dprintf("WinDbg MCP Extension: Uninitialized\n");
 }
 
 extern "C"
