@@ -7,14 +7,15 @@ enabling LLM-assisted debugging of Windows kernel and user-mode applications.
 """
 from typing import Any, Dict, List, Optional, Union
 from fastmcp import FastMCP, Context
-from fastmcp.settings import ServerSettings
 from commands import execute_command, display_type, display_memory, DEFAULT_TIMEOUT_MS
 from commands.command_handlers import dispatch_command
+import commands.windbg_api as windbg_api
 import sys
 import logging
 import traceback
 import os
 import time
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,90 @@ if DEBUG:
     logging.getLogger('fastmcp').setLevel(logging.DEBUG)
     logging.getLogger('mcp').setLevel(logging.DEBUG)
     logging.getLogger('uvicorn').setLevel(logging.DEBUG)
+
+# Initialize debugging mode detection before starting server
+def initialize_debugging_mode():
+    """Initialize debugging mode detection to prevent recursive loops later."""
+    try:
+        # Send raw commands directly to check the mode without going through validation
+        logger.info("Detecting debugging mode on startup...")
+        
+        # Use the windbg_api methods directly with direct messaging
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": ".effmach",
+                "timeout_ms": 5000
+            }
+        }
+        
+        try:
+            response = windbg_api._send_message(message, 5000)
+            result = response.get("output", "")
+            
+            # Check for kernel mode indicators
+            if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+                windbg_api._is_kernel_mode = True
+                logger.info("✓ Kernel-mode debugging detected.")
+                return
+        except Exception as e:
+            logger.warning(f"Error checking debugging mode via .effmach: {e}")
+            
+        # Try alternative command: !pcr (processor control region, kernel-only)
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": "!pcr",
+                "timeout_ms": 5000
+            }
+        }
+        
+        try:
+            response = windbg_api._send_message(message, 5000)
+            result = response.get("output", "")
+            
+            # If !pcr works, we're in kernel mode
+            if result and not (result.startswith("Error:") or "is not a recognized extension command" in result):
+                windbg_api._is_kernel_mode = True
+                logger.info("✓ Kernel-mode debugging detected via !pcr command.")
+                return
+        except Exception as e:
+            logger.warning(f"Error checking debugging mode via !pcr: {e}")
+        
+        # Try a third check with !process 0 0 which works in kernel mode
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": "!process 0 0",
+                "timeout_ms": 10000  # Longer timeout for process command
+            }
+        }
+        
+        try:
+            response = windbg_api._send_message(message, 10000)
+            result = response.get("output", "")
+            
+            # If !process 0 0 successfully shows PROCESS blocks, we're in kernel debugging
+            if result and "PROCESS" in result and "SESSION" in result:
+                windbg_api._is_kernel_mode = True
+                logger.info("✓ Kernel-mode debugging detected via !process command.")
+                return
+        except Exception as e:
+            logger.warning(f"Error checking debugging mode via !process: {e}")
+            
+        # If we get here, we're in user-mode
+        windbg_api._is_kernel_mode = False
+        logger.info("✓ User-mode debugging detected.")
+    except Exception as e:
+        # Set default mode to user-mode on error
+        windbg_api._is_kernel_mode = False
+        logger.warning(f"Failed to detect debugging mode: {e}. Defaulting to user-mode.")
 
 # Create the FastMCP server instance
 logger.info("Creating WinDbg MCP Server")
@@ -60,7 +145,11 @@ AVAILABLE_TOOLS = [
     "get_pte",
     "get_handle",
     "search_symbols",
-    "get_stack_trace"
+    "get_stack_trace",
+    "get_all_thread_stacks",
+    "troubleshoot_symbols",
+    "run_command_sequence",
+    "analyze_exception"
 ]
 
 @mcp.tool()
@@ -612,21 +701,539 @@ async def get_stack_trace(ctx: Context, thread_id: str = "") -> Union[str, Dict[
     Returns:
         Stack trace information or error dict
     """
-    logger.debug(f"Getting stack trace for {thread_id or 'current thread'}")
+    logger.debug(f"Getting stack trace for thread: {thread_id if thread_id else 'current'}")
     try:
-        cmd = "kb"
+        # Save the current thread context if we're going to switch
+        saved_thread = None
         if thread_id:
-            # First switch to the specified thread
-            switch_result = execute_command(f".thread {thread_id}", timeout_ms=10000)
-            if isinstance(switch_result, dict) and "error" in switch_result:
-                return {"error": f"Failed to switch to thread {thread_id}: {switch_result['error']}"}
+            # Get current thread first
+            current_thread = execute_command(".thread", timeout_ms=5000)
+            if current_thread:
+                match = re.search(r'Current thread is ([0-9a-fA-F`]+)', current_thread)
+                if match:
+                    saved_thread = match.group(1)
+            
+            # Switch to requested thread
+            thread_result = execute_command(f".thread {thread_id}", timeout_ms=10000)
+            if thread_result and "Invalid thread" in thread_result:
+                return {"error": f"Invalid thread ID or address: {thread_id}"}
                 
-        # Get a detailed stack trace with all parameters
-        return execute_command(f"{cmd} 100", timeout_ms=30000)
+        # Get the stack trace
+        result = execute_command("k 25", timeout_ms=15000)  # Show 25 frames
+        
+        # Restore original thread context if we switched
+        if saved_thread:
+            execute_command(f".thread {saved_thread}", timeout_ms=10000)
+            
+        return result
     except Exception as e:
         logger.error(f"Error getting stack trace: {e}")
         logger.error(traceback.format_exc())
         return {"error": str(e)}
+
+@mcp.tool()
+async def get_all_thread_stacks(ctx: Context, count: int = 5) -> Union[str, Dict[str, str]]:
+    """
+    Get stack traces for all threads in the current process, or the first N threads.
+    This tool provides functionality similar to the "~* k" command but works in MCP.
+    
+    Args:
+        ctx: The MCP context
+        count: Maximum number of threads to show stacks for (default: 5)
+        
+    Returns:
+        Combined stack traces or error dict
+    """
+    logger.debug(f"Getting stack traces for up to {count} threads")
+    try:
+        # First check if we're in kernel mode
+        from commands.windbg_api import check_debugging_mode
+        is_kernel_mode = check_debugging_mode()
+        
+        # Save current thread context
+        current_thread = None
+        thread_cmd_result = execute_command(".thread", timeout_ms=5000)
+        if thread_cmd_result:
+            match = re.search(r'Current thread is ([0-9a-fA-F`]+)', thread_cmd_result)
+            if match:
+                current_thread = match.group(1)
+                logger.debug(f"Saved current thread context: {current_thread}")
+        
+        # Get the list of threads
+        if is_kernel_mode:
+            # In kernel mode, use !thread without params to list threads in the current process
+            threads_output = execute_command("!thread", timeout_ms=30000)
+        else:
+            # In user mode, list all threads with ~
+            threads_output = execute_command("~", timeout_ms=10000)
+        
+        if threads_output.startswith("Error:"):
+            return {"error": threads_output.replace("Error: ", "")}
+        
+        # Parse thread IDs
+        thread_ids = []
+        
+        if is_kernel_mode:
+            # Parse kernel mode !thread output
+            for match in re.finditer(r'THREAD\s+([a-fA-F0-9`]+)', threads_output):
+                thread_ids.append(match.group(1))
+        else:
+            # Parse user mode ~ output
+            for line in threads_output.splitlines():
+                if re.match(r'^\s*\d+\s+Id:', line):
+                    match = re.search(r'Id:\s+([a-fA-F0-9]+)', line)
+                    if match:
+                        thread_ids.append(match.group(1))
+        
+        if not thread_ids:
+            return {"error": "No threads found in current process"}
+        
+        # Limit to requested count
+        thread_ids = thread_ids[:min(count, len(thread_ids))]
+        logger.debug(f"Found {len(thread_ids)} threads, showing stack for first {len(thread_ids)}")
+        
+        # Get stack for each thread
+        results = []
+        for i, tid in enumerate(thread_ids):
+            try:
+                # Switch to thread and get stack
+                switch_result = execute_command(f".thread {tid}", timeout_ms=10000)
+                
+                # If thread switch failed, note the error and continue
+                if switch_result and "Invalid thread" in switch_result:
+                    results.append(f"Thread {tid}: Error - Could not switch to thread")
+                    continue
+                
+                # Get stack trace with frame count
+                stack = execute_command("k 15", timeout_ms=15000)  # Get 15 frames
+                
+                # Format the result
+                if stack:
+                    results.append(f"Thread {tid} stack trace:\n{stack}\n")
+                else:
+                    results.append(f"Thread {tid}: No stack trace available")
+            except Exception as e:
+                results.append(f"Thread {tid}: Error getting stack - {str(e)}")
+        
+        # Restore original thread context
+        if current_thread:
+            logger.debug(f"Restoring original thread context: {current_thread}")
+            execute_command(f".thread {current_thread}", timeout_ms=10000)
+        
+        # Combine all stack traces
+        if results:
+            return "\n".join(results)
+        else:
+            return {"warning": "No thread stack traces could be collected"}
+    except Exception as e:
+        logger.error(f"Error getting all thread stacks: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": f"Failed to get thread stacks: {str(e)}"}
+
+@mcp.tool()
+async def troubleshoot_symbols(ctx: Context) -> Union[str, Dict[str, str]]:
+    """
+    Run a comprehensive symbol troubleshooting procedure.
+    
+    Args:
+        ctx: The MCP context
+        
+    Returns:
+        Symbol diagnostics or error dict
+    """
+    logger.debug("Running comprehensive symbol troubleshooting")
+    try:
+        # First check if we're in kernel mode
+        from commands.windbg_api import check_debugging_mode
+        is_kernel_mode = check_debugging_mode()
+        
+        results = []
+        results.append("===== SYMBOL TROUBLESHOOTING REPORT =====")
+        results.append(f"Mode: {'Kernel-Mode' if is_kernel_mode else 'User-Mode'} Debugging")
+        
+        # 1. Check current symbol path
+        results.append("\n=== Current Symbol Path ===")
+        sympath = execute_command(".sympath", timeout_ms=10000)
+        results.append(sympath.strip())
+        
+        # 2. Check symbol search path environment variable
+        results.append("\n=== Symbol Environment ===")
+        symenv = execute_command(".symopt", timeout_ms=10000)
+        results.append(symenv.strip())
+        
+        # 3. Check if symbols are loaded for critical modules
+        results.append("\n=== Critical Module Symbol Status ===")
+        
+        # Different critical modules based on mode
+        critical_modules = ["nt", "ntoskrnl", "hal"] if is_kernel_mode else ["ntdll", "kernel32", "user32"]
+        
+        for module in critical_modules:
+            results.append(f"\nChecking symbols for '{module}':")
+            
+            # Try to get module information
+            module_info = execute_command(f"lmv m {module}", timeout_ms=15000)
+            results.append(module_info.strip())
+            
+            # Check for loaded symbols
+            if "No symbols loaded" in module_info:
+                # Try to reload symbols for this module
+                results.append(f"\n> Attempting to reload symbols for {module}...")
+                
+                # First get the base address if available
+                base_addr = None
+                for line in module_info.splitlines():
+                    if "Base Address:" in line:
+                        match = re.search(r'Base Address:\s+([a-fA-F0-9`]+)', line)
+                        if match:
+                            base_addr = match.group(1)
+                
+                # Build reload command
+                reload_cmd = f".reload {module}"
+                if base_addr:
+                    reload_cmd += f"={base_addr}"
+                
+                reload_result = execute_command(reload_cmd, timeout_ms=30000)
+                results.append(f"{reload_cmd} result:\n{reload_result.strip()}")
+                
+                # Check if reload helped
+                module_info_after = execute_command(f"lmv m {module}", timeout_ms=15000)
+                if "No symbols loaded" not in module_info_after and "Symbol file not found" not in module_info_after:
+                    results.append(f"> Successfully loaded symbols for {module}")
+                else:
+                    results.append(f"> Could not load symbols for {module}")
+        
+        # 4. Enable symbol noisy mode and try to load some symbols
+        results.append("\n=== Symbol Loading Diagnostics ===")
+        
+        # Enable verbose symbol loading
+        sym_noisy = execute_command("!sym noisy", timeout_ms=5000)
+        results.append("Enabled verbose symbol loading:")
+        results.append(sym_noisy.strip())
+        
+        # Try to look up a common symbol
+        if is_kernel_mode:
+            test_symbol = execute_command("x nt!ExAllocatePool*", timeout_ms=20000)
+        else:
+            test_symbol = execute_command("x ntdll!Rtl*Heap*", timeout_ms=20000)
+        
+        results.append("\nSymbol lookup test:")
+        results.append(test_symbol.strip())
+        
+        # 5. Check symbol load failures
+        results.append("\n=== Symbol Verification ===")
+        
+        # Get symbol loaded modules
+        lme_result = execute_command("lme", timeout_ms=15000)
+        results.append("Modules with loaded symbols:")
+        results.append(lme_result.strip())
+        
+        # Get symbol missing modules
+        lmn_result = execute_command("lmn", timeout_ms=15000)
+        results.append("\nModules missing symbols:")
+        results.append(lmn_result.strip())
+        
+        # 6. Provide recommendations
+        results.append("\n=== Recommendations ===")
+        
+        if "srv*" not in sympath and "_NT_SYMBOL_PATH" not in symenv:
+            results.append("1. Set up symbol server path:")
+            results.append("   .sympath+ srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+        
+        if "No symbols loaded" in module_info:
+            results.append("2. Try manual symbol reload for specific modules:")
+            results.append("   .reload /f <module>=<base_address>")
+        
+        if is_kernel_mode:
+            results.append("3. For kernel debugging, ensure kernel symbols match the target:")
+            results.append("   .reload /f /k")
+            results.append("   !lmi nt")
+        
+        results.append("4. To restore normal symbol settings after troubleshooting:")
+        results.append("   !sym quiet")
+        
+        # Turn off noisy symbol mode when finished
+        execute_command("!sym quiet", timeout_ms=5000)
+        
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Error in symbol troubleshooting: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": f"Symbol troubleshooting failed: {str(e)}"}
+
+@mcp.tool()
+async def run_command_sequence(ctx: Context, commands: List[str]) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Run a sequence of commands and return all results.
+    This provides basic scripting capability to overcome dot-command limitations.
+    
+    Args:
+        ctx: The MCP context
+        commands: List of commands to execute in sequence
+        
+    Returns:
+        Dictionary with results for each command
+    """
+    logger.debug(f"Running command sequence with {len(commands)} commands")
+    results = []
+    
+    # First check if we're in kernel mode
+    from commands.windbg_api import check_debugging_mode
+    is_kernel_mode = check_debugging_mode()
+    
+    # Save current context if needed for restoration
+    saved_process = None
+    saved_thread = None
+    
+    # Check if we need to track context changes
+    context_changing = any(cmd.startswith((".process", ".thread", "!process")) for cmd in commands)
+    
+    if context_changing:
+        try:
+            # Get and save current process context
+            process_info = execute_command(".process", timeout_ms=5000)
+            if process_info:
+                match = re.search(r'Implicit process is ([0-9a-fA-F`]+)', process_info)
+                if match:
+                    saved_process = match.group(1)
+                    logger.debug(f"Saved process context: {saved_process}")
+            
+            # Get and save current thread context
+            thread_info = execute_command(".thread", timeout_ms=5000)
+            if thread_info:
+                match = re.search(r'Current thread is ([0-9a-fA-F`]+)', thread_info)
+                if match:
+                    saved_thread = match.group(1)
+                    logger.debug(f"Saved thread context: {saved_thread}")
+        except Exception as e:
+            logger.warning(f"Error saving context before command sequence: {e}")
+    
+    # Process each command in sequence
+    try:
+        for i, cmd in enumerate(commands):
+            if not cmd or not cmd.strip():
+                results.append({
+                    "command": cmd,
+                    "result": "(empty command)",
+                    "success": False
+                })
+                continue
+                
+            logger.info(f"Executing command {i+1}/{len(commands)}: {cmd}")
+            
+            try:
+                # Check if this is a command that requires special handling
+                if cmd.startswith(".logopen"):
+                    # Logging commands aren't supported in MCP, provide feedback
+                    results.append({
+                        "command": cmd,
+                        "result": "Logging commands (.logopen, .logappend, .logclose) are not supported in MCP. Use the run_command tool output for command logging.",
+                        "success": False
+                    })
+                elif cmd.startswith(".foreach") or cmd.startswith(".for") or cmd.startswith(".while"):
+                    # Loop commands aren't supported, provide feedback
+                    results.append({
+                        "command": cmd,
+                        "result": "Loop commands (.foreach, .for, .while) are not supported in MCP. Use the run_command_sequence tool with multiple commands instead.",
+                        "success": False
+                    })
+                elif cmd.startswith(".if") or cmd.startswith(".else"):
+                    # Conditional commands aren't supported, provide feedback
+                    results.append({
+                        "command": cmd,
+                        "result": "Conditional commands (.if, .else, .elsif) are not supported in MCP. Use the LLM's logic to determine which commands to run.",
+                        "success": False
+                    })
+                elif cmd.startswith(".alias"):
+                    # Alias commands aren't supported, provide feedback
+                    results.append({
+                        "command": cmd,
+                        "result": "Alias commands (.alias) are not supported in MCP. Use direct commands instead.",
+                        "success": False
+                    })
+                else:
+                    # Normal command execution
+                    result = execute_command(cmd, timeout_ms=30000)
+                    success = not (result.startswith("Error:") if result else True)
+                    
+                    results.append({
+                        "command": cmd,
+                        "result": result,
+                        "success": success
+                    })
+            except Exception as e:
+                # Handle individual command errors without breaking the sequence
+                logger.error(f"Error executing command '{cmd}': {e}")
+                logger.error(traceback.format_exc())
+                results.append({
+                    "command": cmd,
+                    "result": f"Error: {str(e)}",
+                    "success": False
+                })
+    finally:
+        # Restore context if we saved it
+        if saved_process or saved_thread:
+            logger.debug("Restoring saved debugging context after command sequence")
+            try:
+                if saved_process:
+                    logger.debug(f"Restoring process context to {saved_process}")
+                    execute_command(f".process /r /p {saved_process}", timeout_ms=15000)
+                
+                if saved_thread:
+                    logger.debug(f"Restoring thread context to {saved_thread}")
+                    execute_command(f".thread {saved_thread}", timeout_ms=10000)
+            except Exception as e:
+                logger.warning(f"Error restoring context after command sequence: {e}")
+                # Add a warning to the results
+                results.append({
+                    "command": "(context restoration)",
+                    "result": f"Warning: Failed to restore original debugging context: {e}",
+                    "success": False
+                })
+    
+    # Create a formatted summary for easier reading
+    summary = "\n".join([
+        f"Command {i+1}: {r['command']}\n"
+        f"Success: {r['success']}\n"
+        f"Result:\n"
+        f"{r['result']}\n"
+        f"{'-' * 40}"
+        for i, r in enumerate(results)
+    ])
+    
+    return {
+        "results": results,
+        "summary": summary,
+        "mode": "kernel" if is_kernel_mode else "user",
+        "success_count": sum(1 for r in results if r.get("success", False)),
+        "total_count": len(results)
+    }
+
+@mcp.tool()
+async def analyze_exception(ctx: Context) -> Union[str, Dict[str, str]]:
+    """
+    Analyze the current exception or bugcheck with useful context.
+    This tool enhances the standard '!analyze -v' command with additional information and explanation.
+    
+    Args:
+        ctx: The MCP context
+        
+    Returns:
+        Analysis information or error dict
+    """
+    logger.debug("Running enhanced exception analysis")
+    try:
+        # First check if we're in kernel mode
+        from commands.windbg_api import check_debugging_mode
+        is_kernel_mode = check_debugging_mode()
+        
+        # Setup results array
+        results = []
+        results.append("===== EXCEPTION ANALYSIS =====")
+        
+        # Run the analyze command for detailed information
+        analysis = execute_command("!analyze -v", timeout_ms=60000)
+        
+        # Check for manual break-in vs real exception
+        if "Break instruction exception" in analysis or "80000003" in analysis:
+            results.append("*** MANUAL BREAK-IN DETECTED ***")
+            results.append("This is a manual break-in or debugger pause, not a real bugcheck/exception.")
+            results.append("For real bugcheck analysis, examine crash dumps or trigger a test bugcheck.")
+            results.append("\nSummary: User initiated debugger break-in")
+            results.append("\n--- Basic analysis information follows ---\n")
+        elif "EXCEPTION_CODE:" in analysis or "BUGCHECK_CODE:" in analysis:
+            # Real exception/bugcheck detected
+            if is_kernel_mode:
+                results.append("*** KERNEL BUGCHECK DETECTED ***")
+            else:
+                results.append("*** USER-MODE EXCEPTION DETECTED ***")
+                
+        # Include the standard analysis
+        results.append(analysis)
+        
+        # Add supplementary information based on mode and exception type
+        bugcheck_code = None
+        exception_code = None
+        
+        # Extract bugcheck code if present
+        bugcheck_match = re.search(r'BUGCHECK_CODE:\s+(0x[0-9a-fA-F]+)', analysis)
+        if bugcheck_match:
+            bugcheck_code = bugcheck_match.group(1)
+            
+        # Extract exception code if present
+        exception_match = re.search(r'EXCEPTION_CODE:\s+(0x[0-9a-fA-F]+)', analysis)
+        if exception_match:
+            exception_code = exception_match.group(1)
+        
+        # Add supplementary analysis based on what we found
+        results.append("\n===== SUPPLEMENTARY ANALYSIS =====")
+        
+        if is_kernel_mode and bugcheck_code:
+            # Get additional information about the bugcheck
+            results.append(f"\nBugcheck code {bugcheck_code} details:")
+            bugcheck_info = execute_command(f"!bugcheck {bugcheck_code}", timeout_ms=10000)
+            results.append(bugcheck_info.strip())
+            
+            # Add stack trace of the current thread
+            results.append("\nCurrent thread stack trace:")
+            stack_trace = execute_command("kb 20", timeout_ms=15000)  # 20 frames
+            results.append(stack_trace.strip())
+            
+            # Try to get triage dump information
+            results.append("\nTriage analysis of current bugcheck:")
+            triage = execute_command("!triage", timeout_ms=20000)
+            results.append(triage.strip())
+            
+        elif not is_kernel_mode and exception_code:
+            # Get additional information about the exception
+            results.append(f"\nException code {exception_code} details:")
+            # Look for common exception codes
+            if "c0000005" in exception_code.lower():
+                results.append("This is an access violation exception (EXCEPTION_ACCESS_VIOLATION).")
+                results.append("Common causes include null pointer dereference, use-after-free, buffer overflow.")
+                
+                # Check for memory at the exception address
+                if "ExceptionAddress:" in analysis:
+                    address_match = re.search(r'ExceptionAddress:\s+([0-9a-fA-F`]+)', analysis)
+                    if address_match:
+                        exception_address = address_match.group(1)
+                        results.append(f"\nMemory near exception address {exception_address}:")
+                        memory_info = execute_command(f"db {exception_address} L40", timeout_ms=10000)
+                        results.append(memory_info.strip())
+            
+            # Add current stack and registers
+            results.append("\nRegisters at time of exception:")
+            registers = execute_command("r", timeout_ms=10000)
+            results.append(registers.strip())
+            
+            results.append("\nStack trace at time of exception:")
+            ex_stack = execute_command("kb 20", timeout_ms=15000)
+            results.append(ex_stack.strip())
+        
+        # Add recommendations for next debugging steps
+        results.append("\n===== RECOMMENDED NEXT STEPS =====")
+        
+        if "Break instruction exception" in analysis or "80000003" in analysis:
+            results.append("Since this is a manual break-in, you may want to:")
+            results.append("1. Set breakpoints at points of interest")
+            results.append("2. Use 'g' to continue execution")
+            results.append("3. Examine process and thread information with '!process 0 0'")
+        elif is_kernel_mode and bugcheck_code:
+            results.append("For this kernel bugcheck, recommended steps:")
+            results.append("1. Check stack trace of the bugcheck to identify failing component")
+            results.append("2. Review memory near key pointers in the bugcheck parameters")
+            results.append("3. Use '!pool' on suspect memory addresses to check for corruptions")
+            results.append("4. Consider using '.reload' to ensure all symbols are loaded")
+        elif not is_kernel_mode and exception_code:
+            results.append("For this user-mode exception, recommended steps:")
+            results.append("1. Check the call stack to find the function that caused the exception")
+            results.append("2. Examine variables and memory at the exception location")
+            results.append("3. Consider setting breakpoints before the exception location")
+            
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Error during exception analysis: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": f"Exception analysis failed: {str(e)}"}
 
 def main():
     """
@@ -666,6 +1273,14 @@ def main():
         print(f"Server running with {transport} transport on port {port}")
     
     try:
+        # Initialize debugging mode detection before starting the server
+        # This prevents recursive loops when mode detection is needed later
+        logger.info("Initializing debugging mode detection...")
+        initialize_debugging_mode()
+        mode = "Kernel-Mode" if windbg_api._is_kernel_mode else "User-Mode"
+        logger.info(f"Debugging mode initialized: {mode}")
+        print(f"Debugging mode: {mode}")
+        
         # Run the FastMCP server with the configured settings
         mcp.run(
             host=host,

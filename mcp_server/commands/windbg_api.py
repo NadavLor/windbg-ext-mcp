@@ -95,6 +95,9 @@ class CommandCategory:
     REGISTER = "register"
     UNKNOWN = "unknown"
 
+# Add this variable at the top of the file, after the imports
+_is_kernel_mode = None
+
 def validate_command(command: str) -> Tuple[bool, Optional[str]]:
     """
     Validate a WinDbg command for safety and correctness.
@@ -126,6 +129,10 @@ def validate_command(command: str) -> Tuple[bool, Optional[str]]:
     # Pass-through for safe commands
     for safe_prefix in SAFE_COMMAND_PREFIXES:
         if command == safe_prefix or command.startswith(safe_prefix + " "):
+            # Even for safe commands, validate for debugging mode
+            is_valid_for_mode, mode_error = validate_command_for_mode(command)
+            if not is_valid_for_mode:
+                return False, mode_error
             return True, None
     
     # Special validation for specific command categories
@@ -139,12 +146,21 @@ def validate_command(command: str) -> Tuple[bool, Optional[str]]:
     elif command_type == CommandCategory.BREAKPOINT:
         return validate_breakpoint_command(command)
     elif command_type == CommandCategory.EXTENSION:
+        # First validate for mode-specific issues
+        is_valid_for_mode, mode_error = validate_command_for_mode(command)
+        if not is_valid_for_mode:
+            return False, mode_error
         return validate_extension_command(command)
     
     # For uncategorized commands, perform basic syntax validation
     if command.startswith(".") and not any(command.startswith(safe) for safe in SAFE_COMMAND_PREFIXES):
         # Meta commands need extra scrutiny
         return validate_meta_command(command)
+    
+    # Check for mode-specific validation for any other commands
+    is_valid_for_mode, mode_error = validate_command_for_mode(command)
+    if not is_valid_for_mode:
+        return False, mode_error
     
     # By default, allow the command but log it
     logger.info(f"Allowing command with default validation: {command}")
@@ -291,6 +307,192 @@ def validate_meta_command(command: str) -> Tuple[bool, Optional[str]]:
         
     # Allow other safe meta commands, but log them
     logger.info(f"Allowing meta command: {command}")
+    return True, None
+
+def check_debugging_mode(timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
+    """
+    Check if we're currently in kernel-mode or user-mode debugging.
+    
+    Args:
+        timeout_ms: Timeout in milliseconds
+        
+    Returns:
+        True if in kernel-mode debugging, False for user-mode
+    """
+    global _is_kernel_mode
+    
+    # Return cached value if available
+    if _is_kernel_mode is not None:
+        return _is_kernel_mode
+    
+    # Set a temporary value to prevent recursion
+    _is_kernel_mode = False
+    
+    try:
+        # Execute a command to check debugging mode, but skip validation
+        # Use a direct message send to avoid recursion
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": ".effmach",
+                "timeout_ms": timeout_ms
+            }
+        }
+        
+        try:
+            response = _send_message(message, timeout_ms)
+            result = response.get("output", "")
+            
+            # Check for kernel mode indicators
+            if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+                logger.debug("Detected kernel-mode debugging session")
+                _is_kernel_mode = True
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking .effmach: {e}")
+        
+        # Try an alternative check with kernel-specific commands
+        # Use !pcr which is more widely available in kernel debugging
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": "!pcr",
+                "timeout_ms": timeout_ms
+            }
+        }
+        
+        try:
+            response = _send_message(message, timeout_ms)
+            result = response.get("output", "")
+            
+            # If !pcr works (doesn't error), we're in kernel mode
+            if result and not (result.startswith("Error:") or "is not a recognized extension command" in result):
+                logger.debug("Detected kernel-mode debugging via !pcr command")
+                _is_kernel_mode = True
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Error checking !pcr: {e}")
+            
+        # Try a third check with !process 0 0 which works in kernel mode
+        message = {
+            "type": "command",
+            "command": "execute_command",
+            "id": int(time.time() * 1000),
+            "args": {
+                "command": "!process 0 0",
+                "timeout_ms": timeout_ms
+            }
+        }
+        
+        try:
+            response = _send_message(message, timeout_ms)
+            result = response.get("output", "")
+            
+            # If !process 0 0 successfully shows PROCESS blocks, we're in kernel debugging
+            if result and "PROCESS" in result and "SESSION" in result:
+                logger.debug("Detected kernel-mode debugging via !process command")
+                _is_kernel_mode = True
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Error checking !process: {e}")
+            
+        logger.debug("Detected user-mode debugging session")
+        _is_kernel_mode = False
+        return False
+    except Exception as e:
+        logger.warning(f"Error detecting debug mode: {e}. Assuming user-mode.")
+        _is_kernel_mode = False
+        return False
+
+def validate_command_for_mode(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> Tuple[bool, Optional[str]]:
+    """
+    Validate if a command is appropriate for the current debugging mode (kernel vs user).
+    
+    Args:
+        command: The command to validate
+        timeout_ms: Timeout in milliseconds
+        
+    Returns:
+        A tuple of (is_valid, error_message)
+        where is_valid is True if the command is valid in current mode, False otherwise
+        and error_message is None if valid, or an error message if invalid
+    """
+    # Check if we're in kernel-mode
+    is_kernel_mode = check_debugging_mode(timeout_ms)
+    
+    # Commands that only work in user-mode debugging
+    user_mode_commands = [
+        "!heap",         # Heap commands
+        "!peb -full",    # Detailed PEB information
+        "!vad",          # Virtual Address Descriptor for user processes
+        "!teb",          # Thread Environment Block
+        "!runaway"       # CPU usage data
+    ]
+    
+    # Commands that only work in kernel-mode debugging
+    kernel_mode_commands = [
+        "!kdtree",        # Kernel mode directory tree
+        "!pcr",           # Processor control region
+        "!poolfind",      # Kernel pool finder
+        "!poolused",      # Kernel pool usage statistics
+        "!drvobj",        # Driver objects
+        "!devobj",        # Device objects
+        "!irp",           # I/O request packets
+        "!dpc"            # DPC objects
+    ]
+    
+    # Map of commands to alternatives when in wrong mode
+    alternative_commands = {
+        "!heap": {
+            "kernel": "!poolused", 
+            "description": "In kernel-mode, use '!poolused' to examine kernel pool usage instead of user-mode heaps."
+        },
+        "!peb": {
+            "kernel": "!process", 
+            "description": "In kernel-mode, use '!process <address>' to examine process information."
+        },
+        "!teb": {
+            "kernel": "!thread", 
+            "description": "In kernel-mode, use '!thread <address>' to examine thread information."
+        },
+        "!vad": {
+            "kernel": "!address", 
+            "description": "In kernel-mode, use '!address' to examine memory regions."
+        },
+        "!runaway": {
+            "kernel": "!running", 
+            "description": "In kernel-mode, try '!running' to see active threads."
+        }
+    }
+    
+    # Check command prefix against mode-specific commands
+    if is_kernel_mode:
+        for user_cmd in user_mode_commands:
+            if command.startswith(user_cmd):
+                # Find alternative command suggestion if available
+                cmd_base = command.split()[0]
+                alt_info = alternative_commands.get(cmd_base, {})
+                alt_cmd = alt_info.get("kernel", "")
+                alt_desc = alt_info.get("description", "")
+                
+                error_msg = f"Command '{cmd_base}' is designed for user-mode debugging but you are currently in kernel-mode debugging."
+                if alt_cmd:
+                    error_msg += f" {alt_desc}"
+                
+                return False, error_msg
+    else:
+        # User mode checks
+        for kernel_cmd in kernel_mode_commands:
+            if command.startswith(kernel_cmd):
+                error_msg = f"Command '{command.split()[0]}' is designed for kernel-mode debugging but you are currently in user-mode debugging."
+                return False, error_msg
+    
     return True, None
 
 # Command timeout tracking for adaptive timeouts
@@ -757,6 +959,12 @@ def execute_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
         logger.warning(f"Invalid command rejected: {command} - Reason: {error_message}")
         return f"Error: Command validation failed - {error_message}"
     
+    # Check if this command is appropriate for the current debugging mode
+    is_mode_appropriate, mode_error = validate_command_for_mode(command, timeout_ms)
+    if not is_mode_appropriate:
+        logger.warning(f"Command not appropriate for current debugging mode: {mode_error}")
+        return f"Error: {mode_error}"
+    
     # Use adaptive timeout based on command type and history
     adjusted_timeout = TimeoutTracker.get_suggested_timeout(command)
     if adjusted_timeout > timeout_ms:
@@ -777,6 +985,11 @@ def execute_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
                 if "error" in result:
                     return f"Error: {result['error']}"
                 return str(result)
+            
+            # For successful outputs, add context about kernel/user mode if relevant
+            is_kernel_mode = check_debugging_mode(timeout_ms)
+            if result and not result.startswith("Error:") and command.startswith(("!heap", "!peb", "!teb", "!vad")) and is_kernel_mode:
+                result += "\n\nNOTE: You are currently in kernel-mode debugging. Some user-mode specific operations may not work as expected."
             
             return result
         except ImportError as e:
@@ -1051,13 +1264,31 @@ def execute_direct_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -
     Returns:
         The output of the command
     """
+    # Skip validation for specific internal commands or those used for mode detection
+    skip_validation = (
+        command.startswith(".process") or 
+        command == "!process" or 
+        command == ".thread" or 
+        command == ".effmach" or 
+        command == "!pcr" or
+        command == "!kdtree" or
+        command == "!process 0 0"
+    )
+    
+    if not skip_validation:
     # Validate the command before execution
-    # Note: Skip validation for internal commands used by special handlers
-    if not (command.startswith(".process") or command == "!process" or command == ".thread"):
         is_valid, error_message = validate_command(command)
         if not is_valid:
             logger.warning(f"Invalid command rejected in direct execution: {command} - Reason: {error_message}")
             return f"Error: Command validation failed - {error_message}"
+        
+        # Check if this command is appropriate for the current debugging mode
+        # But don't do this check for commands used by check_debugging_mode to avoid recursion
+        if not (command == ".effmach" or command == "!pcr" or command == "!kdtree" or command == "!process 0 0"):
+            is_mode_appropriate, mode_error = validate_command_for_mode(command, timeout_ms)
+            if not is_mode_appropriate:
+                logger.warning(f"Invalid command rejected in direct execution: {command} - Reason: {mode_error}")
+                return f"Error: {mode_error}"
     
     message = {
         "type": "command",
@@ -1099,6 +1330,15 @@ def execute_direct_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -
         if output is None:
             return "No output returned from command"
             
+        # For successful outputs, add context about kernel/user mode if relevant
+        # Skip the mode check for commands used by check_debugging_mode to avoid recursion
+        mode_check_commands = [".effmach", "!pcr", "!kdtree", "!process 0 0"]
+        if output and not output.startswith("Error:") and command.startswith(("!heap", "!peb", "!teb", "!vad")) and not any(command == cmd for cmd in mode_check_commands):
+            # Get the cached debugging mode value without causing recursion
+            global _is_kernel_mode
+            if _is_kernel_mode:
+                output += "\n\nNOTE: You are currently in kernel-mode debugging. Some commands may provide different results than in user-mode."
+        
         return output
     except TimeoutError as e:
         logger.error(f"Timeout executing command '{command}' after {timeout_ms}ms: {e}")

@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from typing import Dict, Any, List, Optional, Tuple, Callable, Union
-from .windbg_api import execute_command, execute_direct_command, DEFAULT_TIMEOUT_MS, TimeoutTracker
+from .windbg_api import execute_command, execute_direct_command, DEFAULT_TIMEOUT_MS, TimeoutTracker, check_debugging_mode
 import threading
 import traceback
 
@@ -493,6 +493,16 @@ def handle_process_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -
     Returns:
         Process information
     """
+    # Import check_debugging_mode from windbg_api
+    from .windbg_api import check_debugging_mode
+    
+    # Check if we're in kernel-mode debugging
+    is_kernel_mode = check_debugging_mode(timeout_ms)
+    
+    # Check for command line retrieval attempts in kernel mode
+    if is_kernel_mode and ("-cmdline" in command or "-cl" in command):
+        return "Error: Command line retrieval is not supported in kernel-mode debugging. User-mode process command lines are not accessible from kernel-mode. Use alternative commands like '!process' without -cmdline flag for basic process information."
+
     # Save current process context before changing it
     saved_context = save_process_context(timeout_ms)
     
@@ -538,6 +548,10 @@ def handle_process_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -
             else:
                 # No address specified, list all processes
                 return ErrorRecoveryManager.execute_with_recovery("!process 0 0", timeout_ms)
+        
+        # For kernel-mode, append a note about limitations if appropriate
+        if is_kernel_mode and result and not result.startswith("Error:"):
+            result += "\n\nNOTE: In kernel-mode debugging, some user-mode process information (like command lines) is not accessible. Use user-mode debugging for complete process details."
         
         return result
     finally:
@@ -796,6 +810,89 @@ def handle_handle_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) ->
         if saved_context:
             restore_process_context(timeout_ms)
 
+
+@CommandRegistry.register(".reload")
+def handle_reload_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
+    """
+    Enhanced handler for the .reload command, which improves symbol loading in kernel mode.
+    
+    Args:
+        command: The reload command string
+        timeout_ms: Timeout in milliseconds
+    
+    Returns:
+        Result of the symbol reload operation
+    """
+    from .windbg_api import check_debugging_mode
+    
+    # Check if we're in kernel-mode debugging
+    is_kernel_mode = check_debugging_mode(timeout_ms)
+    
+    # Basic command without parameters - try to improve it
+    if command == ".reload":
+        logger.info("Enhancing basic .reload command with module-specific information")
+        
+        # Get module list first
+        modules = execute_direct_command("lm", timeout_ms)
+        if modules and not modules.startswith("Error:"):
+            # Extract loaded modules and build better reload command
+            # For kernel-mode, we need full module names with base addresses
+            if is_kernel_mode:
+                logger.info("Kernel-mode detected, using full module names and addresses for reload")
+                # Parse module list for base addresses and names
+                module_matches = []
+                
+                # Different module format patterns
+                patterns = [
+                    # Pattern for standard module listing with addr name format
+                    r'([a-fA-F0-9`]+)\s+([a-zA-Z0-9_]+)',
+                    # Pattern for alternate format with name addr format
+                    r'([a-zA-Z0-9_]+)\s+([a-fA-F0-9`]+)'
+                ]
+                
+                for line in modules.splitlines():
+                    for pattern in patterns:
+                        matches = re.findall(pattern, line)
+                        if matches:
+                            for match in matches:
+                                # Check if it's addr,name or name,addr
+                                if all(c in "0123456789abcdefABCDEF`" for c in match[0]):
+                                    # addr,name format
+                                    module_matches.append((match[1], match[0]))
+                                else:
+                                    # name,addr format
+                                    module_matches.append((match[0], match[1]))
+                
+                if module_matches:
+                    # Construct enhanced reload command with critical modules first
+                    enhanced_cmd = ".reload"
+                    
+                    # Critical modules to prioritize
+                    critical_modules = ["nt", "ntoskrnl", "hal", "win32k", "ndis", "tcpip"]
+                    
+                    # Add critical modules first (up to 5)
+                    critical_found = 0
+                    for name, addr in module_matches:
+                        if name.lower() in critical_modules and critical_found < 5:
+                            enhanced_cmd += f" /f {name}={addr}"
+                            critical_found += 1
+                    
+                    # Then add some additional modules (up to 10 total)
+                    additional = 0
+                    for name, addr in module_matches:
+                        if name.lower() not in critical_modules and additional < (10 - critical_found):
+                            enhanced_cmd += f" /f {name}={addr}"
+                            additional += 1
+                    
+                    result = execute_direct_command(enhanced_cmd, timeout_ms * 2)  # Double timeout for reload
+                    if result:
+                        return f"Enhanced reload command executed: {enhanced_cmd}\n\n{result}"
+        
+        # If improved approach didn't work or wasn't applicable, try original command
+        return execute_direct_command(command, timeout_ms)
+    
+    # If there are specific parameters already, use the command as is
+    return ErrorRecoveryManager.execute_with_recovery(command, timeout_ms)
 
 def dispatch_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     """

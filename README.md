@@ -1,81 +1,207 @@
-# WinDbg-MCP Extension – LLM-Assisted Kernel Debugging
+# WinDbg-ext-MCP: Vibe kernel debugging!
 
-**WinDbg-MCP** is a security-focused toolchain that connects an LLM-based IDE (like Cursor) to WinDbg for real-time kernel debugging. The architecture consists of three parts: (1) a WinDbg extension (C++) loaded in a kernel debugging session; (2) an MCP server (Python/FastMCP) that bridges Cursor and WinDbg; and (3) the Cursor IDE (LLM client) that sends natural-language prompts. In practice, you attach WinDbg to a Windows 10 VM kernel (e.g. via `net:port,key`), set breakpoints, and then ask questions in Cursor such as _“What is the address of explorer.exe’s PEB?”_ or _“Show me the EPROCESS of explorer.exe.”_ The system invokes the corresponding MCP tool, runs WinDbg commands, and returns structured answers.
+WinDbg-ext-MCP connects your preferred LLM client with WinDbg to enable LLM-assisted kernel debugging. This toolchain allows you to write natural language prompts in your AI coding assistant and get real-time information about the Windows kernel being debugged in WinDbg.
+
+![Architecture Overview](https://via.placeholder.com/800x400?text=WinDbg-MCP+Architecture)
+
+## Key Features
+
+- 🔍 **Natural Language Kernel Debugging** - Ask questions in plain English about kernel structures, processes, memory, and more
+- 🔄 **Real-time Integration** - Works with live kernel debugging sessions, including breakpoints
+- 🛠 **Comprehensive Toolset** - 25+ specialized debugging tools for memory inspection, process analysis, and more
+- 🧠 **LLM Context Awareness** - Your AI assistant understands kernel debugging concepts and WinDbg commands
 
 ## Architecture
 
-- **WinDbg Extension (C++):**  
-  A DLL (`windbgmcpExt`) loaded into WinDbg (kernel mode) that initializes an MCP server over a named pipe (`\\.\pipe\windbgmcp`), registers command handlers, and exports custom commands. Notably it provides `help`, `objecttypes`, `hello`, and MCP control commands `!mcpstart`, `!mcpstop`, and `!mcpstatus`. When these commands are invoked in WinDbg, the extension starts/stops the server or displays status via the pipe server thread.
+```
+┌─────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌───────────────────┐
+│  LLM Client  │<-->│  MCP Server     │<-->│  WinDbg         │<-->│  Windows 10 VM    │
+│  (e.g. Cursor)│    │  (Python/FastMCP)│    │  Extension (C++)│    │  (Target Kernel)  │
+└─────────────┘    └─────────────────┘    └─────────────────┘    └───────────────────┘
+```
 
-- **MCP Server (Python):**  
-  A FastMCP-based HTTP/SSE server that registers asynchronous _tools_ for debugging tasks. Example tools include connection checks, session metadata, registers, memory dumps, module and process listings, PEB/TEB queries, stack traces, etc. Each tool executes WinDbg commands by sending JSON messages over the pipe to the extension. For instance, the `get_peb` tool runs `!peb` in WinDbg and returns the output. The server listens (by default) at `http://localhost:8000/sse`.
+- **LLM Client**: Any AI coding assistant that supports MCP where you type natural language prompts
+- **MCP Server**: Python-based Model Context Protocol server that translates LLM requests into WinDbg commands
+- **WinDbg Extension**: C++ extension loaded into WinDbg that executes commands and returns results
+- **WinDbg**: Connected to the target Windows VM kernel via standard methods (net:port,key)
 
-- **Cursor IDE (LLM client):**  
-  Connects to the MCP server and uses the defined tools to answer queries. When the user prompts Cursor, the LLM selects a suitable tool (e.g. `display_type`, `list_modules`, `get_peb`) and invokes it via MCP. The JSON output is then formatted by the LLM into a human-readable response. This enables asking natural-language questions about the live kernel state.
+## Quick Start
 
-## Installation
+### Prerequisites
 
-1. **WinDbg & Visual Studio:** Ensure you have WinDbg (Windows Debugger) and Visual Studio (C++ tools) installed on the host.  
-2. **Build the Extension:** Open the `extension` project in Visual Studio (it’s a WinDbg extension sample project). Compile for 64-bit. This produces `windbgmcpExt.dll`. Copy it to the WinDbg extension folder or note its path.  
-3. **WinDbg Setup:** In your WinDbg kernel session (connected to the target VM), load the extension DLL:  
-   ```none
+- WinDbg (Windows Debugger) - [Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
+- Visual Studio with C++ tools
+- Python 3.10+ with poetry
+- An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code with Cline/Roo Code extension, etc.)
+- Windows VM for target debugging
+
+### Installation
+
+1. **Build the WinDbg Extension**
+
+```powershell
+# Clone the repository
+git clone https://github.com/yourusername/windbg-ext-mcp.git
+cd windbg-ext-mcp
+
+# Open the extension project in Visual Studio and build for x64
+# or use MSBuild from command line
+cd extension
+msbuild /p:Configuration=Release /p:Platform=x64
+```
+
+2. **Install the MCP Server**
+
+```powershell
+
+# Install dependencies using Poetry
+poetry install
+
+# Run the server
+poetry run python .mcp_server\server.py
+```
+
+3. **Load the Extension in WinDbg**
+
+```
+# In WinDbg, after connecting to your target kernel:
+.load C:\path\to\windbg-ext-mcp\extension\x64\Release\windbgmcpExt.dll
+```
+
+4. **Start the MCP Server**
+
+If you haven't started it via the script in step 2:
+```powershell
+cd mcp_server # Or navigate to the directory containing server.py if different
+poetry run python .\server.py 
+# (Adjust path to server.py as necessary)
+```
+
+5. **Configure your LLM client**
+
+```powershell
+# Run the installation script to configure your installed LLM clients
+python install_client_config.py
+
+# To uninstall the configuration
+python install_client_config.py --uninstall
+
+# For silent operation (no output messages)
+python install_client_config.py --quiet
+
+# Force installation even if tools are not detected
+python install_client_config.py --force
+```
+
+This script automatically configures the MCP server endpoint (default: `http://localhost:8000/sse`) in supported LLM clients. The script intelligently detects which tools are installed on your system and only configures those that are present:
+- Cursor
+- Claude Desktop App
+- VS Code extensions: Cline and Roo Code
+- Codeium (Windsurf)
+
+## Usage Guide
+
+### Setting Up a Debugging Session
+
+1. **Start your Windows 10 VM** in debugging mode 
+   - Guide on how to do it: https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/setting-up-network-debugging-of-a-virtual-machine-host
+2. **Connect WinDbg** to the VM kernel:
+   ```
+   windbg -k net:port=<port>,key=<key>
+   ```
+3. **Load symbols** in WinDbg:
+   ```
+   .symfix
+   .reload
+   ```
+4. **Load the WinDbg-MCP extension**:
+   ```
    .load C:\path\to\windbgmcpExt.dll
-   ```  
-   You should see a message like:  
    ```
-   MCP server started on pipe: \\.\pipe\windbgmcp
+5. **Set breakpoints** as needed, or manually break into the debugger:
    ```
-4. **Python & MCP Server:** Install Python 3.8+ and navigate to `mcp_server`. Install requirements via the provided PowerShell script or manually:  
-   ```powershell
-   # PowerShell script
-   mcp_server\scripts\start_mcp_server.ps1
-   ```  
-   Or:
-   ```shell
-   pip install -r mcp_server/requirements.txt
+   bp nt!NtOpenProcess
+   g
    ```
-5. **Run the Server:** Start the MCP server by executing:
-   ```shell
-   cd mcp_server
-   python server.py
+6. **Verify MCP connection** in WinDbg:
    ```
-   (An entry point `windbg-mcp` may also be available.) The server will list available tools and listen on the configured host/port.
+   !mcpstatus
+   ```
 
-## Setup and Usage
+### Example Workflow
 
-- **Cursor IDE:** Configure Cursor (or another LLM tool) to use the MCP server’s endpoint (default `http://localhost:8000/sse`). Verify the `check_connection` tool returns success.  
-- **WinDbg Session:** Ensure WinDbg is connected to the target kernel. Use `.symfix`/`.reload` to load symbols as needed.  
-- **Start/Stop MCP:** The extension auto-starts the MCP server on load. You can also control it in WinDbg:  
-  ```none
-  !mcpstart   ; start server if stopped  
-  !mcpstop    ; stop server  
-  !mcpstatus  ; show server status  
-  ```  
-- **Breakpoints:** Set breakpoints, e.g.,  
-  ```none
-  bp nt!NtOpenProcess; g
-  ```  
-- **Issuing Prompts:** In Cursor, type a natural-language question. The LLM will call the appropriate tool. For example:  
-  > **User Prompt:** “What is the address of explorer.exe’s PEB?”  
-  > **LLM Action:** Calls `get_peb` (executes `!peb`).  
-  > **Response:** “Explorer.exe PEB is at `0xfffffa8001234000`.”
+1. **Break into the kernel** (hit a breakpoint or press Ctrl+Break)
+2. **Ask questions in your LLM client**:
 
-## Contribution Guidelines
+   - "What process is currently running?"
+   - "Show me the stack trace of the current thread"
+   - "What's the address of explorer.exe's PEB?"
+   - "Display the EPROCESS structure at 0xffff8e0e481d7080"
+   - "List all running processes"
+   - "Show me the IDT"
+   - "Analyze the current exception"
 
-- **Code Organization:** Components are separate: C++ extension, Python server, Cursor logic. Refactor each in isolation.  
-- **Coding Style:** Use PEP8 for Python; follow Microsoft C++ conventions. Apply consistent formatting (e.g. `clang-format`, `black`).  
-- **Documentation:** Maintain docstrings and comments.  
-- **Testing:** Run existing tests (`pytest` or `unittest`). Add tests for new changes.  
-- **Pull Requests:** Fork, branch, and submit PRs with clear descriptions.  
-- **Modernization:** Remove redundancies, modularize long functions, use type hints and smart pointers, and add meaningful logging.
+3. **Your LLM assistant** will:
+   - Select the appropriate MCP tool
+   - Execute the necessary WinDbg commands
+   - Format and return the results
+
+### Available Commands in WinDbg
+
+- `!mcpstart` - Start the MCP server if stopped
+- `!mcpstop` - Stop the MCP server
+- `!mcpstatus` - Show MCP server status
+- `!help` - Display available commands
+
+## Available MCP Tools
+
+WinDbg-MCP provides 25+ specialized debugging tools, including:
+
+- **Session Information**: `check_connection`, `get_metadata`
+- **Memory Analysis**: `display_memory`, `display_type`, `get_pte`
+- **Process Management**: `list_processes`, `get_peb`, `switch_process`
+- **Thread Analysis**: `list_threads`, `get_teb`, `switch_thread`, `get_stack_trace`
+- **Kernel Objects**: `get_object`, `get_object_header`, `get_handle`
+- **Debugging Helpers**: `search_symbols`, `set_breakpoint`, `run_command`
+- **Advanced Analysis**: `get_all_thread_stacks`, `analyze_exception`, `troubleshoot_symbols`
 
 ## Troubleshooting
 
-- **Connection Issues:** Ensure MCP server is running and accessible at the configured host/port, and that `MCP_TRANSPORT` is set to `sse`.  
-- **Symbol Loading:** Use `.symfix` and `.reload` in WinDbg to load symbols.  
-- **Timeouts:** Increase `FASTMCP_TIMEOUT` if commands hang.  
-- **Extension Status:** Use `!mcpstatus` in WinDbg to verify the extension’s server state.
+- **Connection Issues**: Ensure the MCP server is running and WinDbg extension is loaded
+- **Symbol Problems**: Use `!troubleshoot_symbols` or manually run `.symfix` and `.reload`
+- **Command Timeouts**: For long-running commands, increase the timeout in the MCP server config
+- **Extension Not Loading**: Check path, build configuration, and WinDbg architecture match
+
+## Advanced Features
+
+### Process Context Management
+
+WinDbg-MCP maintains context when switching between processes:
+
+```
+# In your client:
+"Switch to explorer.exe process and show its PEB"
+```
+
+The extension will:
+1. Save the current process context
+2. Switch to explorer.exe
+3. Get the PEB information
+4. Restore the original process context
+
+### Command Sequences
+
+Run multiple commands in sequence:
+
+```
+# In your client:
+"Run these commands: !process 0 0, !thread, !peb"
+```
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
