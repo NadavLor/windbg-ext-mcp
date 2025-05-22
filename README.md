@@ -1,8 +1,6 @@
 # WinDbg-ext-MCP
 
-**AI-Powered Kernel Debugging with WinDbg and LLMs**
-
-> Effortlessly debug Windows kernels using natural language and modern AI tools.
+**Vibe debug your Windows kernel!**
 
 ---
 
@@ -14,7 +12,7 @@ WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code
 
 ## ✨ Features
 
-- **Natural Language Debugging:** Ask questions about kernel structures, processes, memory, and more—in plain English.
+- **Natural Language Debugging:** Ask questions about kernel structures, processes, memory, and more in your language.
 - **Live Session Integration:** Seamless operation with live kernel debugging sessions (breakpoints, process/thread context, etc.).
 - **Comprehensive Toolset:** 25+ specialized commands for memory inspection, process/thread analysis, and advanced kernel tasks.
 - **Context-Aware AI:** LLMs understand WinDbg terminology and kernel debugging workflows.
@@ -116,12 +114,12 @@ WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code
 > Just type these questions in your LLM client:
 
 - What process is currently running?
-- Show me the stack trace of the current thread.
+- Show me the stack trace of the current thread
 - What's the address of explorer.exe's PEB?
-- Display the EPROCESS structure at 0xffff8e0e481d7080.
-- List all running processes.
-- Show me the IDT.
-- Analyze the current exception.
+- Display the EPROCESS structure at 0xffff8e0e481d7080
+- List all running processes
+- Show me the IDT
+- Analyze the current exception
 
 The LLM assistant will:
 - Select the best MCP tool
@@ -169,7 +167,7 @@ The LLM assistant will:
 Seamlessly switch between processes in your session:
 
 ```text
-"Switch to explorer.exe process and show its PEB"
+Switch to explorer.exe process and show its PEB
 ```
 The extension:
 1. Saves current process context
@@ -182,14 +180,10 @@ The extension:
 Run multiple commands at once:
 
 ```text
-"Run these commands: !process 0 0, !thread, !peb"
+Run these commands: !process 0 0, !thread, !peb
 ```
 
 ---
-
-## 🤝 Contributing
-
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## 📄 License
 
