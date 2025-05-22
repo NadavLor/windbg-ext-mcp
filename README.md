@@ -1,17 +1,23 @@
-# WinDbg-ext-MCP: Vibe kernel debugging!
+# WinDbg-ext-MCP
 
-WinDbg-ext-MCP connects your preferred LLM client with WinDbg to enable LLM-assisted kernel debugging. This toolchain allows you to write natural language prompts in your AI coding assistant and get real-time information about the Windows kernel being debugged in WinDbg.
+**Vibe kernel debugging with LLMs and WinDbg!**
 
-![Architecture Overview](https://via.placeholder.com/800x400?text=WinDbg-MCP+Architecture)
+WinDbg-ext-MCP connects your favorite LLM client (like Cursor) with WinDbg, enabling natural language, AI-assisted kernel debugging. Write prompts in your AI coding assistant and get real-time insights from the Windows kernel being debugged in WinDbg.
+
+---
 
 ## Key Features
 
-- 🔍 **Natural Language Kernel Debugging** - Ask questions in plain English about kernel structures, processes, memory, and more
-- 🔄 **Real-time Integration** - Works with live kernel debugging sessions, including breakpoints
-- 🛠 **Comprehensive Toolset** - 25+ specialized debugging tools for memory inspection, process analysis, and more
-- 🧠 **LLM Context Awareness** - Your AI assistant understands kernel debugging concepts and WinDbg commands
+- 🔍 **Natural Language Kernel Debugging**: Ask questions in plain English about kernel structures, processes, memory, and more.
+- 🔄 **Real-time Integration**: Works with live kernel debugging sessions, including breakpoints.
+- 🛠 **Comprehensive Toolset**: 25+ specialized debugging tools for memory inspection, process analysis, and more.
+- 🧠 **LLM Context Awareness**: Your AI assistant understands kernel debugging concepts and WinDbg commands.
+
+---
 
 ## Architecture
+
+The system consists of four main components:
 
 ```
 ┌──────────────────────┐     ┌────────────────────────┐     ┌────────────────────────────┐     ┌────────────────────────────┐
@@ -20,84 +26,56 @@ WinDbg-ext-MCP connects your preferred LLM client with WinDbg to enable LLM-assi
 └──────────────────────┘     └────────────────────────┘     └────────────────────────────┘     └────────────────────────────┘
 ```
 
-- **LLM Client**: Any AI coding assistant that supports MCP where you type natural language prompts
-- **MCP Server**: Python-based Model Context Protocol server that translates LLM requests into WinDbg commands
-- **WinDbg Extension**: C++ extension loaded into WinDbg that executes commands and returns results
-- **WinDbg**: Connected to the target Windows VM kernel via standard methods (net:port,key)
+- **LLM Client**: Any AI coding assistant that supports MCP (e.g., Cursor, Claude Desktop, VS Code with Cline/Roo Code).
+- **MCP Server**: Python-based Model Context Protocol server that translates LLM requests into WinDbg commands.
+- **WinDbg Extension**: C++ extension loaded into WinDbg that executes commands and returns results.
+- **Windows 10 VM**: The target kernel being debugged.
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- WinDbg (Windows Debugger) - [Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
+- [WinDbg (Windows Debugger)](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
 - Visual Studio with C++ tools
-- Python 3.10+ with poetry
-- An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code with Cline/Roo Code extension, etc.)
+- Python 3.10+ with [Poetry](https://python-poetry.org/)
+- An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code with Cline/Roo Code, etc.)
 - Windows VM for target debugging
 
 ### Installation
 
-1. **Build the WinDbg Extension**
+1. **Clone the repository and build the WinDbg Extension:**
+    ```powershell
+    git clone https://github.com/yourusername/windbg-ext-mcp.git
+    cd windbg-ext-mcp/extension
+    msbuild /p:Configuration=Release /p:Platform=x64
+    ```
 
-```powershell
-# Clone the repository
-git clone https://github.com/yourusername/windbg-ext-mcp.git
-cd windbg-ext-mcp
+2. **Install and run the MCP Server:**
+    ```powershell
+    cd ../mcp_server
+    poetry install
+    poetry run python server.py
+    ```
 
-# Open the extension project in Visual Studio and build for x64
-# or use MSBuild from command line
-cd extension
-msbuild /p:Configuration=Release /p:Platform=x64
-```
+3. **Load the Extension in WinDbg:**
+    ```text
+    .load C:\\path\\to\\windbg-ext-mcp\\extension\\x64\\Release\\windbgmcpExt.dll
+    ```
 
-2. **Install the MCP Server**
+4. **Configure your LLM client:**
+    ```powershell
+    python ../install_client_config.py
+    ```
 
-```powershell
+---
 
-# Install dependencies using Poetry
-poetry install
+## Usage
 
-# Run the server
-poetry run python .mcp_server\server.py
-```
+See the [Usage Guide](#usage-guide) below for detailed instructions and examples.
 
-3. **Load the Extension in WinDbg**
-
-```
-# In WinDbg, after connecting to your target kernel:
-.load C:\path\to\windbg-ext-mcp\extension\x64\Release\windbgmcpExt.dll
-```
-
-4. **Start the MCP Server**
-
-If you haven't started it via the script in step 2:
-```powershell
-cd mcp_server # Or navigate to the directory containing server.py if different
-poetry run python .\server.py 
-# (Adjust path to server.py as necessary)
-```
-
-5. **Configure your LLM client**
-
-```powershell
-# Run the installation script to configure your installed LLM clients
-python install_client_config.py
-
-# To uninstall the configuration
-python install_client_config.py --uninstall
-
-# For silent operation (no output messages)
-python install_client_config.py --quiet
-
-# Force installation even if tools are not detected
-python install_client_config.py --force
-```
-
-This script automatically configures the MCP server endpoint (default: `http://localhost:8000/sse`) in supported LLM clients. The script intelligently detects which tools are installed on your system and only configures those that are present:
-- Cursor
-- Claude Desktop App
-- VS Code extensions: Cline and Roo Code
-- Codeium (Windsurf)
+---
 
 ## Usage Guide
 
