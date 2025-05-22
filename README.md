@@ -14,10 +14,10 @@ WinDbg-ext-MCP connects your preferred LLM client with WinDbg to enable LLM-assi
 ## Architecture
 
 ```
-┌─────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌───────────────────┐
-│ LLM Client   │<-->│ MCP Server      │<-->│ WinDbg          │<-->│ Windows 10 VM     │
-│ (e.g. Cursor)│    │ (Python/FastMCP)│    │ Extension (C++) │    │ (Target Kernel)   │
-└─────────────┘    └─────────────────┘    └─────────────────┘    └───────────────────┘
+┌──────────────────────┐     ┌────────────────────────┐     ┌────────────────────────────┐     ┌────────────────────────────┐
+│  LLM Client          │<--->│  MCP Server            │<--->│  WinDbg                    │<--->│  Windows 10 VM             │
+│  (e.g. Cursor)       │     │  (Python/FastMCP)      │     │  Extension (C++)           │     │  (Target Kernel)           │
+└──────────────────────┘     └────────────────────────┘     └────────────────────────────┘     └────────────────────────────┘
 ```
 
 - **LLM Client**: Any AI coding assistant that supports MCP where you type natural language prompts
