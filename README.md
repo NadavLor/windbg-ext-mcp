@@ -6,7 +6,7 @@
 
 ## 🚀 Overview
 
-WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code) with WinDbg, enabling **real-time, AI-assisted kernel debugging**. Write prompts in your AI coding assistant and receive instant, context-aware analysis and insights from your live kernel debugging session.
+WinDbg-ext-MCP connects your LLM client (like Cursor, Claude, or VS Code) with WinDbg, enabling **real-time, AI assistant kernel debugging**. Write prompts in your AI coding assistant and receive instant, context-aware analysis and insights from your live kernel debugging session.
 
 ---
 
@@ -14,7 +14,7 @@ WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code
 
 - **Natural Language Debugging:** Ask questions about kernel structures, processes, memory, and more in your language.
 - **Live Session Integration:** Seamless operation with live kernel debugging sessions (breakpoints, process/thread context, etc.).
-- **Comprehensive Toolset:** 25+ specialized commands for memory inspection, process/thread analysis, and advanced kernel tasks.
+- **Comprehensive Toolset:** 25+ commands for memory inspection, process/thread analysis, and kernel tasks.
 - **Context-Aware AI:** LLMs understand WinDbg terminology and kernel debugging workflows.
 
 ---
@@ -23,15 +23,15 @@ WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code
 
 ```plaintext
 ┌─────────────────────┐     ┌─────────────────────┐     ┌────────────────────────┐     ┌──────────────────────┐
-│    LLM Client       │ <-> │     MCP Server      │ <-> │   WinDbg Extension     │ <-> │   Windows 10 VM      │
-│  (Cursor, Claude)   │     │   (Python/FastMCP)  │     │    (C++ DLL)           │     │ (Target Kernel)      │
+│    LLM Client       │ <-> │     MCP Server      │ <-> │   WinDbg Extension     │ <-> │    Windows VM        │
+│  (Cursor, Claude)   │     │   (Python/FastMCP)  │     │    (C++ DLL)           │     │  (Target Kernel)     │
 └─────────────────────┘     └─────────────────────┘     └────────────────────────┘     └──────────────────────┘
 ```
 
 - **LLM Client:** Any AI coding assistant that supports MCP (e.g., Cursor, Claude, VS Code with Cline/Roo Code)
-- **MCP Server:** Python-based Model Context Protocol server, translating LLM prompts to WinDbg commands.
+- **MCP Server:** Python based Model Context Protocol server, translating LLM prompts to WinDbg commands.
 - **WinDbg Extension:** C++ DLL loaded into WinDbg, executes commands and returns results.
-- **Windows 10 VM:** The target system for kernel debugging.
+- **Windows VM:** The target system for kernel debugging.
 
 ---
 
@@ -40,10 +40,10 @@ WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code
 ### Prerequisites
 
 - [WinDbg (Windows Debugger)](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
-- Visual Studio with C++ build tools
+- (Optional) Visual Studio with C++ build tools
 - Python 3.10+ with [Poetry](https://python-poetry.org/)
 - An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code + Cline/Roo)
-- Windows 10 VM for kernel debugging
+- Windows VM for kernel debugging
 
 ### Installation
 
@@ -161,16 +161,7 @@ The LLM assistant will:
 
 ---
 
-## 🆘 Troubleshooting
-
-- **Connection Issues:** Ensure the MCP server is running and the extension is loaded.
-- **Symbols Not Found:** Use `!troubleshoot_symbols` or run `.symfix` and `.reload`.
-- **Timeouts:** Increase command timeout in the MCP server config for long operations.
-- **Extension Not Loading:** Confirm file paths, build configuration, and matching WinDbg/extension architectures.
-
----
-
-## 💡 Advanced Features
+## 💡 Additional Features
 
 ### Process Context Management
 
