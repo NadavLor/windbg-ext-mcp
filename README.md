@@ -1,185 +1,198 @@
 # WinDbg-ext-MCP
 
-**Vibe kernel debugging with LLMs and WinDbg!**
+**AI-Powered Kernel Debugging with WinDbg and LLMs**
 
-WinDbg-ext-MCP connects your favorite LLM client (like Cursor) with WinDbg, enabling natural language, AI-assisted kernel debugging. Write prompts in your AI coding assistant and get real-time insights from the Windows kernel being debugged in WinDbg.
-
----
-
-## Key Features
-
-- 🔍 **Natural Language Kernel Debugging**: Ask questions in plain English about kernel structures, processes, memory, and more.
-- 🔄 **Real-time Integration**: Works with live kernel debugging sessions, including breakpoints.
-- 🛠 **Comprehensive Toolset**: 25+ specialized debugging tools for memory inspection, process analysis, and more.
-- 🧠 **LLM Context Awareness**: Your AI assistant understands kernel debugging concepts and WinDbg commands.
+> Effortlessly debug Windows kernels using natural language and modern AI tools.
 
 ---
 
-## Architecture
+## 🚀 Overview
 
-The system consists of four main components:
+WinDbg-ext-MCP bridges your favorite LLM client (like Cursor, Claude, or VS Code) with WinDbg, enabling **real-time, AI-assisted kernel debugging**. Write prompts in your AI coding assistant and receive instant, context-aware analysis and insights from your live kernel debugging session.
 
+---
+
+## ✨ Features
+
+- **Natural Language Debugging:** Ask questions about kernel structures, processes, memory, and more—in plain English.
+- **Live Session Integration:** Seamless operation with live kernel debugging sessions (breakpoints, process/thread context, etc.).
+- **Comprehensive Toolset:** 25+ specialized commands for memory inspection, process/thread analysis, and advanced kernel tasks.
+- **Context-Aware AI:** LLMs understand WinDbg terminology and kernel debugging workflows.
+
+---
+
+## 🏗️ Architecture
+
+```plaintext
+┌─────────────────────┐     ┌─────────────────────┐     ┌────────────────────────┐     ┌──────────────────────┐
+│    LLM Client       │ <-> │     MCP Server      │ <-> │   WinDbg Extension     │ <-> │   Windows 10 VM      │
+│  (Cursor, Claude)   │     │   (Python/FastMCP)  │     │    (C++ DLL)           │     │ (Target Kernel)      │
+└─────────────────────┘     └─────────────────────┘     └────────────────────────┘     └──────────────────────┘
 ```
-┌──────────────────────┐     ┌────────────────────────┐     ┌────────────────────────────┐     ┌────────────────────────────┐
-│  LLM Client          │<--->│  MCP Server            │<--->│  WinDbg                    │<--->│  Windows 10 VM             │
-│  (e.g. Cursor)       │     │  (Python/FastMCP)      │     │  Extension (C++)           │     │  (Target Kernel)           │
-└──────────────────────┘     └────────────────────────┘     └────────────────────────────┘     └────────────────────────────┘
-```
 
-- **LLM Client**: Any AI coding assistant that supports MCP (e.g., Cursor, Claude Desktop, VS Code with Cline/Roo Code).
-- **MCP Server**: Python-based Model Context Protocol server that translates LLM requests into WinDbg commands.
-- **WinDbg Extension**: C++ extension loaded into WinDbg that executes commands and returns results.
-- **Windows 10 VM**: The target kernel being debugged.
+- **LLM Client:** Any AI coding assistant that supports MCP (e.g., Cursor, Claude, VS Code with Cline/Roo Code)
+- **MCP Server:** Python-based Model Context Protocol server, translating LLM prompts to WinDbg commands.
+- **WinDbg Extension:** C++ DLL loaded into WinDbg, executes commands and returns results.
+- **Windows 10 VM:** The target system for kernel debugging.
 
 ---
 
-## Quick Start
+## ⚡ Quick Start
 
 ### Prerequisites
 
 - [WinDbg (Windows Debugger)](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/)
-- Visual Studio with C++ tools
+- Visual Studio with C++ build tools
 - Python 3.10+ with [Poetry](https://python-poetry.org/)
-- An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code with Cline/Roo Code, etc.)
-- Windows VM for target debugging
+- An MCP-compatible LLM client (Cursor, Claude Desktop, VS Code + Cline/Roo)
+- Windows 10 VM for kernel debugging
 
 ### Installation
 
-1. **Clone the repository and build the WinDbg Extension:**
-    ```powershell
-    git clone https://github.com/yourusername/windbg-ext-mcp.git
-    cd windbg-ext-mcp/extension
-    msbuild /p:Configuration=Release /p:Platform=x64
-    ```
+1. **Clone and build the extension:**
+   ```sh
+   git clone https://github.com/yourusername/windbg-ext-mcp.git
+   cd windbg-ext-mcp/extension
+   msbuild /p:Configuration=Release /p:Platform=x64
+   ```
 
-2. **Install and run the MCP Server:**
-    ```powershell
-    cd ../mcp_server
-    poetry install
-    poetry run python server.py
-    ```
+2. **Install and start the MCP server:**
+   ```sh
+   cd ../mcp_server
+   poetry install
+   poetry run python server.py
+   ```
 
-3. **Load the Extension in WinDbg:**
-    ```text
-    .load C:\\path\\to\\windbg-ext-mcp\\extension\\x64\\Release\\windbgmcpExt.dll
-    ```
+3. **Load the extension in WinDbg:**
+   ```sh
+   .load C:\path\to\windbg-ext-mcp\extension\x64\Release\windbgmcpExt.dll
+   ```
 
 4. **Configure your LLM client:**
-    ```powershell
-    python ../install_client_config.py
-    ```
-
----
-
-## Usage
-
-See the [Usage Guide](#usage-guide) below for detailed instructions and examples.
-
----
-
-## Usage Guide
-
-### Setting Up a Debugging Session
-
-1. **Start your Windows 10 VM** in debugging mode 
-   - Guide on how to do it: https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/setting-up-network-debugging-of-a-virtual-machine-host
-2. **Connect WinDbg** to the VM kernel:
+   ```sh
+   python ../install_client_config.py
    ```
+
+---
+
+## 🛠️ Usage
+
+### Start a Debugging Session
+
+1. **Start your Windows 10 VM** in debugging mode  
+   [Network Debugging Guide](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/setting-up-network-debugging-of-a-virtual-machine-host)
+
+2. **Connect WinDbg to the VM:**
+   ```sh
    windbg -k net:port=<port>,key=<key>
    ```
-3. **Load symbols** in WinDbg:
-   ```
+
+3. **Load symbols:**
+   ```sh
    .symfix
    .reload
    ```
-4. **Load the WinDbg-MCP extension**:
-   ```
+
+4. **Load the extension:**
+   ```sh
    .load C:\path\to\windbgmcpExt.dll
    ```
-5. **Set breakpoints** as needed, or manually break into the debugger:
-   ```
+
+5. **Set breakpoints (optional):**
+   ```sh
    bp nt!NtOpenProcess
    g
    ```
-6. **Verify MCP connection** in WinDbg:
-   ```
+
+6. **Verify MCP connection:**
+   ```sh
    !mcpstatus
    ```
 
-### Example Workflow
+---
 
-1. **Break into the kernel** (hit a breakpoint or press Ctrl+Break)
-2. **Ask questions in your LLM client**:
+### Example AI Queries
 
-   - "What process is currently running?"
-   - "Show me the stack trace of the current thread"
-   - "What's the address of explorer.exe's PEB?"
-   - "Display the EPROCESS structure at 0xffff8e0e481d7080"
-   - "List all running processes"
-   - "Show me the IDT"
-   - "Analyze the current exception"
+> Just type these questions in your LLM client:
 
-3. **Your LLM assistant** will:
-   - Select the appropriate MCP tool
-   - Execute the necessary WinDbg commands
-   - Format and return the results
+- What process is currently running?
+- Show me the stack trace of the current thread.
+- What's the address of explorer.exe's PEB?
+- Display the EPROCESS structure at 0xffff8e0e481d7080.
+- List all running processes.
+- Show me the IDT.
+- Analyze the current exception.
 
-### Available Commands in WinDbg
+The LLM assistant will:
+- Select the best MCP tool
+- Run the corresponding WinDbg commands
+- Format and present the results
 
-- `!mcpstart` - Start the MCP server if stopped
-- `!mcpstop` - Stop the MCP server
-- `!mcpstatus` - Show MCP server status
-- `!help` - Display available commands
+---
 
-## Available MCP Tools
+## 🧰 Command Reference
 
-WinDbg-MCP provides 25+ specialized debugging tools, including:
+| Command         | Description                         |
+|-----------------|-------------------------------------|
+| `!mcpstart`     | Start the MCP server                |
+| `!mcpstop`      | Stop the MCP server                 |
+| `!mcpstatus`    | Show MCP server status              |
+| `!help`         | List available commands             |
 
-- **Session Information**: `check_connection`, `get_metadata`
-- **Memory Analysis**: `display_memory`, `display_type`, `get_pte`
-- **Process Management**: `list_processes`, `get_peb`, `switch_process`
-- **Thread Analysis**: `list_threads`, `get_teb`, `switch_thread`, `get_stack_trace`
-- **Kernel Objects**: `get_object`, `get_object_header`, `get_handle`
-- **Debugging Helpers**: `search_symbols`, `set_breakpoint`, `run_command`
-- **Advanced Analysis**: `get_all_thread_stacks`, `analyze_exception`, `troubleshoot_symbols`
+---
 
-## Troubleshooting
+### 🧑‍💻 Available MCP Tools
 
-- **Connection Issues**: Ensure the MCP server is running and WinDbg extension is loaded
-- **Symbol Problems**: Use `!troubleshoot_symbols` or manually run `.symfix` and `.reload`
-- **Command Timeouts**: For long-running commands, increase the timeout in the MCP server config
-- **Extension Not Loading**: Check path, build configuration, and WinDbg architecture match
+- **Session Info:** `check_connection`, `get_metadata`
+- **Memory:** `display_memory`, `display_type`, `get_pte`
+- **Process:** `list_processes`, `get_peb`, `switch_process`
+- **Threads:** `list_threads`, `get_teb`, `switch_thread`, `get_stack_trace`
+- **Kernel Objects:** `get_object`, `get_object_header`, `get_handle`
+- **Helpers:** `search_symbols`, `set_breakpoint`, `run_command`
+- **Advanced:** `get_all_thread_stacks`, `analyze_exception`, `troubleshoot_symbols`
 
-## Advanced Features
+---
+
+## 🆘 Troubleshooting
+
+- **Connection Issues:** Ensure the MCP server is running and the extension is loaded.
+- **Symbols Not Found:** Use `!troubleshoot_symbols` or run `.symfix` and `.reload`.
+- **Timeouts:** Increase command timeout in the MCP server config for long operations.
+- **Extension Not Loading:** Confirm file paths, build configuration, and matching WinDbg/extension architectures.
+
+---
+
+## 💡 Advanced Features
 
 ### Process Context Management
 
-WinDbg-MCP maintains context when switching between processes:
+Seamlessly switch between processes in your session:
 
-```
-# In your client:
+```text
 "Switch to explorer.exe process and show its PEB"
 ```
-
-The extension will:
-1. Save the current process context
-2. Switch to explorer.exe
-3. Get the PEB information
-4. Restore the original process context
+The extension:
+1. Saves current process context
+2. Switches to explorer.exe
+3. Retrieves PEB info
+4. Restores original context
 
 ### Command Sequences
 
-Run multiple commands in sequence:
+Run multiple commands at once:
 
-```
-# In your client:
+```text
 "Run these commands: !process 0 0, !thread, !peb"
 ```
 
-## Contributing
+---
+
+## 🤝 Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## License
+## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
