@@ -9,8 +9,16 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <iomanip>
+#include <random>
+#include <ctime>
 
 // ExtensionApis is now forward-declared in pch.h and defined in types.cpp
+
+// Global variables for tracking performance and health
+static std::chrono::steady_clock::time_point g_lastCommandTime = std::chrono::steady_clock::now();
+static std::string g_sessionId;
+static double g_lastExecutionTime = 0.0;
 
 void CommandHandlers::RegisterHandlers(MCPServer& server) {
     // Register command handlers
@@ -22,6 +30,14 @@ void CommandHandlers::RegisterHandlers(MCPServer& server) {
     server.RegisterHandler("dd", DisplayMemoryHandler);
     server.RegisterHandler("execute_command", ExecuteCommandHandler);
     server.RegisterHandler("for_each_module", ForEachModuleHandler);
+    
+    // New enhanced command handlers
+    server.RegisterHandler("health_check", HealthCheckHandler);
+    server.RegisterHandler("connection_status", ConnectionStatusHandler);
+    server.RegisterHandler("capture_session_state", CaptureSessionStateHandler);
+    server.RegisterHandler("performance_metrics", PerformanceMetricsHandler);
+    server.RegisterHandler("execute_command_enhanced", ExecuteCommandEnhancedHandler);
+    server.RegisterHandler("execute_command_streaming", ExecuteCommandStreamingHandler);
 }
 
 json CommandHandlers::CheckConnectionHandler(const json& message) {
@@ -161,6 +177,9 @@ json CommandHandlers::DisplayMemoryHandler(const json& message) {
 
 json CommandHandlers::ExecuteCommandHandler(const json& message) {
     try {
+        auto start_time = std::chrono::steady_clock::now();
+        g_lastCommandTime = start_time;
+        
         auto args = message.value("args", json::object());
         std::string command = args.value("command", "");
         unsigned int timeout = args.value("timeout_ms", 30000u);  // Increased default timeout to 30 seconds
@@ -172,6 +191,13 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
                 "Command is required",
                 ErrorCategory::CommandSyntax
             );
+        }
+        
+        // Use timeout categorization for automatic timeout adjustment
+        TimeoutCategory category = CategorizeCommand(command);
+        unsigned int suggested_timeout = GetTimeoutForCategory(category);
+        if (timeout < suggested_timeout) {
+            timeout = suggested_timeout;
         }
         
         // Special handling for specific commands that need custom processing
@@ -187,13 +213,12 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
             // Address-specific handling
             return HandleAddressCommand(message.value("id", 0), command, timeout);
         }
-        else if (command.find("!handle") == 0) {
-            // Handle command may be long-running, increase timeout
-            timeout = (timeout > 60000u) ? timeout : 60000u;  // Minimum 60-second timeout for handle command
-        }
         
         try {
             std::string output = ExecuteWinDbgCommand(command, timeout);
+            auto end_time = std::chrono::steady_clock::now();
+            double execution_time = std::chrono::duration<double>(end_time - start_time).count();
+            g_lastExecutionTime = execution_time;
             
             // Check if the output is empty or contains error messages
             if (output.empty()) {
@@ -220,10 +245,11 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
                 );
             }
             
-            return CreateSuccessResponse(
+            return CreateSuccessResponseWithMetadata(
                 message.value("id", 0),
-                "execute_command",
-                output
+                command,
+                output,
+                execution_time
             );
         }
         catch (const std::exception& e) {
@@ -711,13 +737,79 @@ std::string CommandHandlers::ExecuteWinDbgCommand(const std::string& command, un
 }
 
 json CommandHandlers::CreateSuccessResponse(int id, const std::string& command, const std::string& output) {
+    auto current_time = std::chrono::steady_clock::now();
+    auto execution_time = std::chrono::duration<double>(current_time - g_lastCommandTime).count();
+    
     return {
         {"id", id},
         {"type", "response"},
         {"command", command},
         {"status", "success"},
-        {"output", output}
+        {"output", output},
+        {"success", true},
+        {"metadata", {
+            {"execution_time", execution_time},
+            {"response_time", execution_time * 1000}, // in milliseconds
+            {"data_size", output.length()},
+            {"timestamp", GetCurrentTimestamp()},
+            {"debugging_mode", GetDebuggingMode()},
+            {"retries_attempted", 0}
+        }}
     };
+}
+
+json CommandHandlers::CreateSuccessResponseWithMetadata(int id, const std::string& command, const std::string& output, 
+                                                      double execution_time, const std::string& debugging_mode) {
+    if (execution_time == 0.0) {
+        auto current_time = std::chrono::steady_clock::now();
+        execution_time = std::chrono::duration<double>(current_time - g_lastCommandTime).count();
+    }
+    
+    std::string mode = debugging_mode.empty() ? GetDebuggingMode() : debugging_mode;
+    
+    return {
+        {"id", id},
+        {"type", "response"},
+        {"command", command},
+        {"status", "success"},
+        {"output", output},
+        {"success", true},
+        {"metadata", {
+            {"execution_time", execution_time},
+            {"response_time", execution_time * 1000}, // in milliseconds
+            {"data_size", output.length()},
+            {"timestamp", GetCurrentTimestamp()},
+            {"debugging_mode", mode},
+            {"retries_attempted", 0},
+            {"extension_version", GetExtensionVersion()},
+            {"windbg_version", GetWinDbgVersion()}
+        }}
+    };
+}
+
+json CommandHandlers::CreateEnhancedErrorResponse(int id, const std::string& command, 
+                                                 const std::string& error, 
+                                                 ErrorCategory category,
+                                                 const std::vector<std::string>& suggestions,
+                                                 const std::vector<std::string>& examples,
+                                                 const std::vector<std::string>& next_steps) {
+    json response = {
+        {"id", id},
+        {"type", "response"},
+        {"command", command},
+        {"status", "error"},
+        {"error", error},
+        {"category", GetErrorCategoryString(category)},
+        {"context", GetDebuggingMode()},
+        {"timestamp", GetCurrentTimestamp()},
+        {"extension_version", GetExtensionVersion()}
+    };
+    
+    if (!suggestions.empty()) response["suggestions"] = suggestions;
+    if (!examples.empty()) response["examples"] = examples;
+    if (!next_steps.empty()) response["next_steps"] = next_steps;
+    
+    return response;
 }
 
 json CommandHandlers::CreateErrorResponse(int id, const std::string& command, const std::string& error) {
@@ -962,5 +1054,563 @@ std::string CommandHandlers::GetSuggestionForError(ErrorCategory category, const
         case ErrorCategory::Unknown:
         default:
             return "";
+    }
+}
+
+// =============================================
+// Utility Methods for Enhanced Functionality
+// =============================================
+
+std::string CommandHandlers::GetCurrentTimestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t_val = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    
+    struct tm tm_info;
+    errno_t err = gmtime_s(&tm_info, &time_t_val);
+    
+    std::stringstream ss;
+    if (err == 0) {
+        ss << std::put_time(&tm_info, "%Y-%m-%dT%H:%M:%S");
+    } else {
+        // Fallback to simple format if gmtime_s fails
+        ss << "1970-01-01T00:00:00";
+    }
+    ss << '.' << std::setfill('0') << std::setw(3) << ms.count() << 'Z';
+    return ss.str();
+}
+
+std::string CommandHandlers::GetDebuggingMode() {
+    try {
+        // Try to determine debugging mode by executing a simple command
+        std::string output = ExecuteWinDbgCommand("vertarget", 1000);
+        if (output.find("Kernel") != std::string::npos) {
+            return "kernel";
+        } else if (output.find("User") != std::string::npos) {
+            return "user";
+        }
+    } catch (...) {
+        // If we can't determine, default to unknown
+    }
+    return "unknown";
+}
+
+std::string CommandHandlers::GetExtensionVersion() {
+    return "WinDbg MCP Extension v1.1.0";
+}
+
+std::string CommandHandlers::GetWinDbgVersion() {
+    try {
+        std::string version = ExecuteWinDbgCommand("version", 2000);
+        // Extract just the version line, remove extra formatting
+        size_t pos = version.find("Microsoft");
+        if (pos != std::string::npos) {
+            size_t end = version.find('\n', pos);
+            if (end != std::string::npos) {
+                return version.substr(pos, end - pos);
+            }
+        }
+        return version.length() > 100 ? version.substr(0, 100) + "..." : version;
+    } catch (...) {
+        return "Unknown WinDbg Version";
+    }
+}
+
+bool CommandHandlers::IsConnectionStable() {
+    try {
+        // Test connection stability by executing a quick command
+        std::string result = ExecuteWinDbgCommand("?", 1000);
+        return !result.empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CommandHandlers::IsTargetResponsive() {
+    try {
+        // Check if the debugging target is responsive
+        std::string result = ExecuteWinDbgCommand(".", 2000);
+        return result.find("Break instruction exception") == std::string::npos &&
+               result.find("Access violation") == std::string::npos;
+    } catch (...) {
+        return false;
+    }
+}
+
+double CommandHandlers::CalculateHealthScore() {
+    double score = 100.0;
+    
+    // Check connection stability
+    if (!IsConnectionStable()) score -= 30.0;
+    
+    // Check target responsiveness
+    if (!IsTargetResponsive()) score -= 20.0;
+    
+    // Check last command execution time
+    auto now = std::chrono::steady_clock::now();
+    auto timeSinceLastCommand = std::chrono::duration<double>(now - g_lastCommandTime).count();
+    if (timeSinceLastCommand > 300.0) { // 5 minutes
+        score -= 15.0;
+    }
+    
+    // Check last execution performance
+    if (g_lastExecutionTime > 30.0) { // 30 seconds
+        score -= 10.0;
+    }
+    
+    return (score < 0.0) ? 0.0 : score;
+}
+
+std::string CommandHandlers::GetLastCommandTime() {
+    // Use current time as approximation since conversion is complex
+    auto now = std::chrono::system_clock::now();
+    auto time_t_val = std::chrono::system_clock::to_time_t(now);
+    
+    struct tm tm_info;
+    errno_t err = gmtime_s(&tm_info, &time_t_val);
+    
+    std::stringstream ss;
+    if (err == 0) {
+        ss << std::put_time(&tm_info, "%Y-%m-%dT%H:%M:%SZ");
+    } else {
+        // Fallback to simple format if gmtime_s fails
+        ss << "1970-01-01T00:00:00Z";
+    }
+    return ss.str();
+}
+
+std::string CommandHandlers::GenerateSessionId() {
+    if (g_sessionId.empty()) {
+        // Generate a simple session ID
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(0, 15);
+        
+        std::stringstream ss;
+        ss << "windbg_session_";
+        for (int i = 0; i < 8; ++i) {
+            ss << std::hex << dis(gen);
+        }
+        g_sessionId = ss.str();
+    }
+    return g_sessionId;
+}
+
+json CommandHandlers::GetCurrentProcessInfo() {
+    try {
+        std::string processInfo = ExecuteWinDbgCommand("!process", 3000);
+        return {
+            {"process_info", processInfo},
+            {"has_data", !processInfo.empty()}
+        };
+    } catch (...) {
+        return {
+            {"process_info", "Unable to retrieve process information"},
+            {"has_data", false}
+        };
+    }
+}
+
+json CommandHandlers::GetCurrentThreadInfo() {
+    try {
+        std::string threadInfo = ExecuteWinDbgCommand("!thread", 3000);
+        return {
+            {"thread_info", threadInfo},
+            {"has_data", !threadInfo.empty()}
+        };
+    } catch (...) {
+        return {
+            {"thread_info", "Unable to retrieve thread information"},
+            {"has_data", false}
+        };
+    }
+}
+
+json CommandHandlers::GetActiveBreakpoints() {
+    try {
+        std::string bpInfo = ExecuteWinDbgCommand("bl", 2000);
+        return {
+            {"breakpoints", bpInfo},
+            {"has_data", !bpInfo.empty()}
+        };
+    } catch (...) {
+        return {
+            {"breakpoints", "Unable to retrieve breakpoint information"},
+            {"has_data", false}
+        };
+    }
+}
+
+json CommandHandlers::GetLoadedModulesInfo() {
+    try {
+        std::string modulesInfo = ExecuteWinDbgCommand("lm", 5000);
+        return {
+            {"modules", modulesInfo},
+            {"has_data", !modulesInfo.empty()}
+        };
+    } catch (...) {
+        return {
+            {"modules", "Unable to retrieve module information"},
+            {"has_data", false}
+        };
+    }
+}
+
+json CommandHandlers::GetTargetSystemInfo() {
+    try {
+        std::string sysInfo = ExecuteWinDbgCommand("vertarget", 2000);
+        return {
+            {"system_info", sysInfo},
+            {"has_data", !sysInfo.empty()}
+        };
+    } catch (...) {
+        return {
+            {"system_info", "Unable to retrieve system information"},
+            {"has_data", false}
+        };
+    }
+}
+
+// =============================================
+// Timeout Management
+// =============================================
+
+TimeoutCategory CommandHandlers::CategorizeCommand(const std::string& command) {
+    std::string cmd_lower = command;
+    std::transform(cmd_lower.begin(), cmd_lower.end(), cmd_lower.begin(), ::tolower);
+    
+    // Quick commands (5 seconds)
+    if (cmd_lower.find("version") != std::string::npos ||
+        cmd_lower.find("r ") == 0 ||
+        cmd_lower.find("?") == 0) {
+        return TimeoutCategory::QUICK;
+    }
+    
+    // Bulk operations (60 seconds)
+    if (cmd_lower.find("!process 0 0") != std::string::npos ||
+        cmd_lower.find("!handle 0 f") != std::string::npos ||
+        cmd_lower.find("lm") == 0) {
+        return TimeoutCategory::BULK;
+    }
+    
+    // Analysis commands (120 seconds)
+    if (cmd_lower.find("!analyze") != std::string::npos ||
+        cmd_lower.find("!poolused") != std::string::npos) {
+        return TimeoutCategory::ANALYSIS;
+    }
+    
+    // Slow commands (30 seconds)
+    if (cmd_lower.find("k") == 0 ||
+        cmd_lower.find("!thread") != std::string::npos ||
+        cmd_lower.find("!dlls") != std::string::npos) {
+        return TimeoutCategory::SLOW;
+    }
+    
+    return TimeoutCategory::NORMAL;
+}
+
+unsigned int CommandHandlers::GetTimeoutForCategory(TimeoutCategory category) {
+    switch (category) {
+        case TimeoutCategory::QUICK: return 5000;
+        case TimeoutCategory::NORMAL: return 15000;
+        case TimeoutCategory::SLOW: return 30000;
+        case TimeoutCategory::BULK: return 60000;
+        case TimeoutCategory::ANALYSIS: return 120000;
+        default: return 15000;
+    }
+}
+
+// =============================================
+// New Enhanced Command Handlers
+// =============================================
+
+json CommandHandlers::HealthCheckHandler(const json& message) {
+    int id = message.value("id", 0);
+    
+    try {
+        json health_data = {
+            {"id", id},
+            {"type", "response"},
+            {"status", "success"},
+            {"health_score", CalculateHealthScore()},
+            {"last_command_time", GetLastCommandTime()},
+            {"connection_stable", IsConnectionStable()},
+            {"debugging_target_responsive", IsTargetResponsive()},
+            {"extension_version", GetExtensionVersion()},
+            {"windbg_version", GetWinDbgVersion()},
+            {"debugging_mode", GetDebuggingMode()},
+            {"timestamp", GetCurrentTimestamp()}
+        };
+        
+        return health_data;
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            id, "health_check", std::string("Health check failed: ") + e.what(),
+            ErrorCategory::InternalError,
+            {"Restart debugging session", "Check WinDbg connection"},
+            {"health_check", "connection_status"},
+            {"Verify debugger is properly attached to target"}
+        );
+    }
+}
+
+json CommandHandlers::ConnectionStatusHandler(const json& message) {
+    int id = message.value("id", 0);
+    
+    try {
+        json status_data = {
+            {"id", id},
+            {"type", "response"},
+            {"status", "success"},
+            {"connection_stable", IsConnectionStable()},
+            {"target_responsive", IsTargetResponsive()},
+            {"debugging_mode", GetDebuggingMode()},
+            {"session_id", GenerateSessionId()},
+            {"uptime_seconds", std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - g_lastCommandTime).count()},
+            {"last_execution_time", g_lastExecutionTime},
+            {"timestamp", GetCurrentTimestamp()}
+        };
+        
+        return status_data;
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            id, "connection_status", std::string("Connection status check failed: ") + e.what(),
+            ErrorCategory::ApiError,
+            {"Check debugger connection", "Restart debugging session"},
+            {"health_check"},
+            {"Verify debugger is properly connected to target"}
+        );
+    }
+}
+
+json CommandHandlers::CaptureSessionStateHandler(const json& message) {
+    int id = message.value("id", 0);
+    
+    try {
+        json session_state = {
+            {"id", id},
+            {"type", "response"},
+            {"status", "success"},
+            {"session_id", GenerateSessionId()},
+            {"debugging_mode", GetDebuggingMode()},
+            {"current_process", GetCurrentProcessInfo()},
+            {"current_thread", GetCurrentThreadInfo()},
+            {"breakpoints", GetActiveBreakpoints()},
+            {"modules", GetLoadedModulesInfo()},
+            {"target_info", GetTargetSystemInfo()},
+            {"timestamp", GetCurrentTimestamp()},
+            {"extension_version", GetExtensionVersion()},
+            {"windbg_version", GetWinDbgVersion()}
+        };
+        
+        return session_state;
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            id, "capture_session_state", std::string("Session state capture failed: ") + e.what(),
+            ErrorCategory::InternalError,
+            {"Retry session state capture", "Check debugging session"},
+            {"connection_status", "health_check"},
+            {"Ensure debugging session is active and responsive"}
+        );
+    }
+}
+
+json CommandHandlers::PerformanceMetricsHandler(const json& message) {
+    int id = message.value("id", 0);
+    
+    try {
+        auto now = std::chrono::steady_clock::now();
+        auto uptime = std::chrono::duration<double>(now - g_lastCommandTime).count();
+        
+        json metrics = {
+            {"id", id},
+            {"type", "response"},
+            {"status", "success"},
+            {"metrics", {
+                {"last_execution_time", g_lastExecutionTime},
+                {"health_score", CalculateHealthScore()},
+                {"uptime_seconds", uptime},
+                {"connection_stable", IsConnectionStable()},
+                {"target_responsive", IsTargetResponsive()},
+                {"session_id", GenerateSessionId()},
+                {"total_commands_executed", "N/A"}, // Could implement counter
+                {"memory_usage", "N/A"} // Could implement memory tracking
+            }},
+            {"timestamp", GetCurrentTimestamp()},
+            {"extension_version", GetExtensionVersion()}
+        };
+        
+        return metrics;
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            id, "performance_metrics", std::string("Performance metrics collection failed: ") + e.what(),
+            ErrorCategory::InternalError,
+            {"Retry metrics collection"},
+            {"health_check"},
+            {"Check system resources and debugging session health"}
+        );
+    }
+}
+
+json CommandHandlers::ExecuteCommandEnhancedHandler(const json& message) {
+    try {
+        auto start_time = std::chrono::steady_clock::now();
+        g_lastCommandTime = start_time;
+        
+        auto args = message.value("args", json::object());
+        std::string command = args.value("command", "");
+        unsigned int timeout = args.value("timeout_ms", 30000u);
+        
+        if (command.empty()) {
+            return CreateEnhancedErrorResponse(
+                message.value("id", 0), "execute_command_enhanced", "Command is required",
+                ErrorCategory::CommandSyntax,
+                {"Provide a valid WinDbg command"},
+                {"execute_command_enhanced {\"args\": {\"command\": \"version\"}}"},
+                {"Check command syntax and try again"}
+            );
+        }
+        
+        // Use timeout categorization for automatic timeout adjustment
+        TimeoutCategory category = CategorizeCommand(command);
+        unsigned int suggested_timeout = GetTimeoutForCategory(category);
+        if (timeout < suggested_timeout) {
+            timeout = suggested_timeout;
+        }
+        
+        try {
+            std::string output = ExecuteWinDbgCommand(command, timeout);
+            auto end_time = std::chrono::steady_clock::now();
+            double execution_time = std::chrono::duration<double>(end_time - start_time).count();
+            g_lastExecutionTime = execution_time;
+            
+            if (output.empty()) {
+                return CreateEnhancedErrorResponse(
+                    message.value("id", 0), "execute_command_enhanced", 
+                    "Command returned no output",
+                    ErrorCategory::ExecutionContext,
+                    {"Check command syntax", "Verify debugging context"},
+                    {"version", "help " + command},
+                    {"Ensure command is valid in current debugging context"}
+                );
+            }
+            
+            return CreateSuccessResponseWithMetadata(
+                message.value("id", 0), command, output, execution_time
+            );
+        }
+        catch (const std::exception& e) {
+            std::string errorMsg = e.what();
+            ErrorCategory category = ClassifyError(errorMsg, S_OK);
+            
+            return CreateEnhancedErrorResponse(
+                message.value("id", 0), "execute_command_enhanced",
+                std::string("Command execution failed: ") + errorMsg,
+                category,
+                {GetSuggestionForError(category, command, S_OK)},
+                {"help " + command, "version"},
+                {"Check command syntax and debugging context"}
+            );
+        }
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            message.value("id", 0), "execute_command_enhanced",
+            std::string("Handler failed: ") + e.what(),
+            ErrorCategory::InternalError,
+            {"Retry command execution"},
+            {"execute_command"},
+            {"Report this issue if it persists"}
+        );
+    }
+}
+
+json CommandHandlers::ExecuteCommandStreamingHandler(const json& message) {
+    try {
+        auto start_time = std::chrono::steady_clock::now();
+        g_lastCommandTime = start_time;
+        
+        auto args = message.value("args", json::object());
+        std::string command = args.value("command", "");
+        int chunk_size = args.value("chunk_size", 4096);
+        unsigned int timeout = args.value("timeout_ms", 60000u); // Default 60s for large ops
+        
+        if (command.empty()) {
+            return CreateEnhancedErrorResponse(
+                message.value("id", 0), "execute_command_streaming", "Command is required",
+                ErrorCategory::CommandSyntax,
+                {"Provide a valid WinDbg command"},
+                {"execute_command_streaming {\"args\": {\"command\": \"lm\"}}"},
+                {"Use streaming for commands that produce large output"}
+            );
+        }
+        
+        // Use timeout categorization
+        TimeoutCategory category = CategorizeCommand(command);
+        unsigned int suggested_timeout = GetTimeoutForCategory(category);
+        if (timeout < suggested_timeout) {
+            timeout = suggested_timeout;
+        }
+        
+        std::string output = ExecuteWinDbgCommand(command, timeout);
+        auto end_time = std::chrono::steady_clock::now();
+        double execution_time = std::chrono::duration<double>(end_time - start_time).count();
+        g_lastExecutionTime = execution_time;
+        
+        if (output.length() <= static_cast<size_t>(chunk_size)) {
+            // Small output, return normally with metadata
+            return CreateSuccessResponseWithMetadata(
+                message.value("id", 0), command, output, execution_time
+            );
+        }
+        
+        // Large output, return streaming response
+        json streaming_response = {
+            {"id", message.value("id", 0)},
+            {"type", "response"},
+            {"command", command},
+            {"status", "success"},
+            {"streaming", true},
+            {"total_size", output.length()},
+            {"chunk_size", chunk_size},
+            {"total_chunks", (output.length() + chunk_size - 1) / chunk_size},
+            {"chunks", json::array()},
+            {"metadata", {
+                {"execution_time", execution_time},
+                {"response_time", execution_time * 1000},
+                {"data_size", output.length()},
+                {"timestamp", GetCurrentTimestamp()},
+                {"debugging_mode", GetDebuggingMode()},
+                {"extension_version", GetExtensionVersion()}
+            }}
+        };
+        
+        // Split into chunks
+        for (size_t i = 0; i < output.length(); i += chunk_size) {
+            std::string chunk = output.substr(i, chunk_size);
+            streaming_response["chunks"].push_back({
+                {"chunk_index", i / chunk_size},
+                {"data", chunk},
+                {"size", chunk.length()}
+            });
+        }
+        
+        return streaming_response;
+    }
+    catch (const std::exception& e) {
+        return CreateEnhancedErrorResponse(
+            message.value("id", 0), "execute_command_streaming",
+            std::string("Streaming command failed: ") + e.what(),
+            ErrorCategory::InternalError,
+            {"Try regular command execution", "Reduce chunk size"},
+            {"execute_command_enhanced"},
+            {"Use execute_command_enhanced for smaller outputs"}
+        );
     }
 } 

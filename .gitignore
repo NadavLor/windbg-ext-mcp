@@ -46,3 +46,4 @@ Release/
 Thumbs.db
 ehthumbs.db
 Desktop.ini 
+mcp_server/windbg_session_state.json

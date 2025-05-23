@@ -16,6 +16,50 @@ typing-extensions = ">=4.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
+pytest-mock = ">=3.10.0"
+pytest-cov = ">=4.0.0"
+pytest-benchmark = ">=4.0.0"
+pytest-asyncio = ">=0.20.0"
+pytest-timeout = ">=2.1.0"
+pytest-xdist = ">=3.0.0"
+coverage = ">=7.0.0"
+
+[tool.pytest.ini_options]
+testpaths = ["mcp_server/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=mcp_server",
+    "--cov-report=html:htmlcov",
+    "--cov-report=term-missing",
+    "--cov-fail-under=80",
+    "--timeout=30",
+    "-v"
+]
+asyncio_mode = "auto"
+timeout = 300
+
+[tool.coverage.run]
+source = ["mcp_server"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/.*",
+    "mcp_server/tests/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class.*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod"
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
