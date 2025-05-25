@@ -37,6 +37,7 @@ The project uses a hybrid architecture optimized for network kernel debugging:
 ### 🔧 Core Debugging Tools
 - **Session Management**: Connection health monitoring, session recovery
 - **Command Execution**: Validation, resilience, and performance optimization
+- **LLM Automation**: Full execution control and breakpoint automation for AI-driven debugging
 - **Process Analysis**: List, switch, and analyze kernel processes
 - **Thread Analysis**: Thread enumeration, stack traces, and context switching
 - **Memory Analysis**: Memory inspection, structure analysis, and search capabilities
@@ -173,6 +174,8 @@ You can also use natural language prompts in Cursor:
 - *"What's the current thread's stack trace?"*
 - *"Analyze the memory at address 0x1000"*
 - *"Help me understand this crash dump"*
+- *"Set a breakpoint on nt!NtCreateFile and continue execution"*
+- *"Step through the next 3 instructions and show me the registers"*
 
 ---
 
@@ -205,6 +208,7 @@ You can also use natural language prompts in Cursor:
 ### Command Execution  
 - `run_command`: Execute WinDbg commands with optimization
 - `run_sequence`: Execute multiple commands in sequence
+- `breakpoint_and_continue`: Set breakpoints and control execution in one step
 
 ### Analysis Tools
 - `analyze_process`: Process analysis and context switching

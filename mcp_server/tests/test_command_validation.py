@@ -75,15 +75,15 @@ class TestCommandValidation(unittest.TestCase):
 
     def test_execution_commands(self):
         """Test validation of execution control commands."""
-        # These should be valid for manual use but not for automation
+        # These should be valid for both manual use and automation now
         execution_cmds = ["g", "p", "t", "gu"]
         for cmd in execution_cmds:
             is_valid, error = validate_command(cmd)
             self.assertTrue(is_valid, f"Command should be valid: {cmd}")
             self.assertIsNone(error, f"No error expected for: {cmd}")
             
-            # But not safe for automation
-            self.assertFalse(is_safe_for_automation(cmd), f"Command should not be safe for automation: {cmd}")
+            # CHANGED: Now safe for automation to enable LLM debugging workflows
+            self.assertTrue(is_safe_for_automation(cmd), f"Command should now be safe for automation: {cmd}")
 
     def test_safe_for_automation(self):
         """Test the automation safety check."""
@@ -92,8 +92,13 @@ class TestCommandValidation(unittest.TestCase):
         for cmd in safe_cmds:
             self.assertTrue(is_safe_for_automation(cmd), f"Command should be safe for automation: {cmd}")
         
-        # Dangerous commands should not be safe
-        unsafe_cmds = ["q", ".kill", "g", "bp 0x1000"]
+        # CHANGED: Execution control and breakpoint commands are now safe for automation
+        now_safe_cmds = ["g", "p", "t", "gu", "bp 0x1000", "bc 0", "be 1", "bd 2"]
+        for cmd in now_safe_cmds:
+            self.assertTrue(is_safe_for_automation(cmd), f"Command should now be safe for automation: {cmd}")
+        
+        # Only genuinely dangerous commands should not be safe
+        unsafe_cmds = ["q", "qq", ".kill", ".detach", ".restart"]
         for cmd in unsafe_cmds:
             self.assertFalse(is_safe_for_automation(cmd), f"Command should not be safe for automation: {cmd}")
 
@@ -104,6 +109,24 @@ class TestCommandValidation(unittest.TestCase):
             is_valid, error = validate_command(cmd)
             self.assertTrue(is_valid, f"Extension command should be valid: {cmd}")
             self.assertIsNone(error, f"No error expected for: {cmd}")
+
+    def test_breakpoint_automation_safety(self):
+        """Test that breakpoint commands are now safe for automation."""
+        breakpoint_cmds = ["bp nt!NtCreateFile", "bp 0x12345678", "bc *", "bc 0", "be 1", "bd 2", "bl"]
+        for cmd in breakpoint_cmds:
+            is_valid, error = validate_command(cmd)
+            self.assertTrue(is_valid, f"Breakpoint command should be valid: {cmd}")
+            self.assertIsNone(error, f"No error expected for: {cmd}")
+            self.assertTrue(is_safe_for_automation(cmd), f"Breakpoint command should be safe for automation: {cmd}")
+
+    def test_context_switch_automation_safety(self):
+        """Test that context switch commands are now safe for automation."""
+        context_cmds = [".thread", ".process"]
+        for cmd in context_cmds:
+            is_valid, error = validate_command(cmd)
+            self.assertTrue(is_valid, f"Context command should be valid: {cmd}")
+            self.assertIsNone(error, f"No error expected for: {cmd}")
+            self.assertTrue(is_safe_for_automation(cmd), f"Context command should be safe for automation: {cmd}")
 
 if __name__ == "__main__":
     unittest.main() 

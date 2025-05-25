@@ -98,7 +98,7 @@ def register_support_tools(mcp: FastMCP):
         if not tool_name:
             # List all available tools
             available_tools = [
-                "debug_session", "run_command", "run_sequence",
+                "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
                 "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
                 "connection_manager", "session_manager", 
                 "performance_manager", "async_manager",
@@ -107,19 +107,26 @@ def register_support_tools(mcp: FastMCP):
             
             return {
                 "available_tools": available_tools,
-                "description": "WinDbg MCP Server - Enhanced Debugging Edition",
+                "description": "WinDbg MCP Server - Enhanced Debugging Edition with LLM Automation",
                 "usage": "Use get_help(tool_name='tool_name') to get help for a specific tool",
                 "examples": [
                     "get_help(tool_name='analyze_process')",
                     "get_help(tool_name='run_command')",
+                    "get_help(tool_name='breakpoint_and_continue')",
                     "get_help(tool_name='analyze_process', action='switch')"
                 ],
                 "tool_categories": {
                     "session_management": ["debug_session", "connection_manager", "session_manager"],
-                    "command_execution": ["run_command", "run_sequence"],
+                    "command_execution": ["run_command", "run_sequence", "breakpoint_and_continue"],
                     "analysis": ["analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel"],
                     "performance": ["performance_manager", "async_manager"],
                     "support": ["troubleshoot", "get_help"]
+                },
+                "automation_features": {
+                    "execution_control": "✅ Now enabled for LLM automation (g, p, t, gu, wt)",
+                    "breakpoint_control": "✅ Now enabled for LLM automation (bp, bc, bd, be, etc.)",
+                    "context_switching": "✅ Now enabled for LLM automation (.thread, .process)",
+                    "combined_operations": "✅ Use breakpoint_and_continue for one-step breakpoint + execution"
                 },
                 "tip": "All tools now provide enhanced error messages with suggestions and examples when something goes wrong"
             }
@@ -134,7 +141,7 @@ def register_support_tools(mcp: FastMCP):
                                          missing_param="tool_name")
             error_dict = enhanced_error.to_dict()
             error_dict["available_tools"] = [
-                "debug_session", "run_command", "run_sequence",
+                "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
                 "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
                 "connection_manager", "session_manager",
                 "performance_manager", "async_manager", 
@@ -162,6 +169,34 @@ def register_support_tools(mcp: FastMCP):
                 "Use resilient=True (default) for unstable VM connections",
                 "Use optimize=True (default) for better caching and performance", 
                 "Commands are automatically categorized for optimal timeouts"
+            ]
+            help_info["execution_control_tips"] = [
+                "✅ Execution control commands now enabled for LLM automation:",
+                "  • 'g' - Continue execution",
+                "  • 'p' - Step over (execute one instruction)",
+                "  • 't' - Step into (trace one instruction)",
+                "  • 'gu' - Go up (execute until function return)",
+                "  • 'wt' - Watch and trace execution",
+                "✅ Breakpoint commands now enabled for LLM automation:",
+                "  • 'bp <address>' - Set breakpoint",
+                "  • 'bc <id>' - Clear breakpoint",
+                "  • 'bd <id>' - Disable breakpoint",
+                "  • 'be <id>' - Enable breakpoint",
+                "💡 Use breakpoint_and_continue() for combined operations"
+            ]
+        elif tool_name == "breakpoint_and_continue":
+            help_info["usage_examples"] = [
+                "breakpoint_and_continue(breakpoint='nt!NtCreateFile')",
+                "breakpoint_and_continue(breakpoint='kernel32!CreateFileW', continue_execution=True)",
+                "breakpoint_and_continue(breakpoint='0x12345678', clear_existing=True)",
+                "breakpoint_and_continue(breakpoint='ntdll!NtOpenFile', continue_execution=False)"
+            ]
+            help_info["automation_benefits"] = [
+                "🚀 Combines breakpoint setting + execution control in one operation",
+                "🎯 Optimized for LLM debugging workflows",
+                "🔄 Automatic context saving and error recovery",
+                "📊 Detailed step-by-step execution reporting",
+                "💡 Built-in guidance for next debugging steps"
             ]
         elif tool_name in ["analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel"]:
             help_info["analysis_tips"] = [

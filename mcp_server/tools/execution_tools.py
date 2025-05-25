@@ -357,3 +357,194 @@ def register_execution_tools(mcp: FastMCP):
             error_dict["partial_results"] = results
             error_dict["commands_processed"] = len(results)
             return error_dict 
+
+    @mcp.tool()
+    async def breakpoint_and_continue(ctx: Context, breakpoint: str, continue_execution: bool = True, clear_existing: bool = False) -> Dict[str, Any]:
+        """
+        Set a breakpoint and optionally continue execution - optimized for LLM automation.
+        
+        This tool combines breakpoint setting with execution control in a single operation,
+        making it ideal for automated debugging workflows.
+        
+        Args:
+            ctx: The MCP context
+            breakpoint: Breakpoint specification (e.g., "nt!NtCreateFile", "0x12345678", "kernel32!CreateFileW")
+            continue_execution: Whether to continue execution after setting breakpoint (default: True)
+            clear_existing: Whether to clear existing breakpoints first (default: False)
+            
+        Returns:
+            Results of breakpoint setting and execution control with debugging guidance
+        """
+        logger.debug(f"Setting breakpoint: {breakpoint}, continue: {continue_execution}, clear_existing: {clear_existing}")
+        
+        # Validate parameters
+        if not breakpoint or not breakpoint.strip():
+            enhanced_error = enhance_error("parameter", 
+                                         tool_name="breakpoint_and_continue", 
+                                         missing_param="breakpoint")
+            return enhanced_error.to_dict()
+        
+        # Update context for better error suggestions
+        error_enhancer.update_context(DebugContext.KERNEL_MODE if detect_kernel_mode() else DebugContext.USER_MODE)
+        
+        # Save context before breakpoint operations
+        context_manager = get_context_manager()
+        context_saved = save_context(context_manager, f"breakpoint_and_continue_{breakpoint}")
+        
+        results = []
+        
+        try:
+            # Step 1: Clear existing breakpoints if requested
+            if clear_existing:
+                logger.debug("Clearing existing breakpoints")
+                try:
+                    success, clear_result, metadata = execute_optimized_command("bc *", "quick")
+                    results.append({
+                        "step": "clear_existing_breakpoints",
+                        "command": "bc *",
+                        "success": success,
+                        "result": clear_result,
+                        "execution_time": metadata.get("response_time", 0)
+                    })
+                    if not success:
+                        logger.warning(f"Failed to clear existing breakpoints: {clear_result}")
+                except Exception as e:
+                    results.append({
+                        "step": "clear_existing_breakpoints",
+                        "command": "bc *",
+                        "success": False,
+                        "error": str(e)
+                    })
+            
+            # Step 2: Set the new breakpoint
+            bp_command = f"bp {breakpoint}"
+            logger.debug(f"Setting breakpoint with command: {bp_command}")
+            
+            success, bp_result, metadata = execute_optimized_command(bp_command, "quick")
+            results.append({
+                "step": "set_breakpoint",
+                "command": bp_command,
+                "success": success,
+                "result": bp_result,
+                "execution_time": metadata.get("response_time", 0),
+                "cached": metadata.get("cached", False)
+            })
+            
+            if not success:
+                return {
+                    "success": False,
+                    "error": f"Failed to set breakpoint: {bp_result}",
+                    "breakpoint": breakpoint,
+                    "steps_completed": results,
+                    "suggestions": [
+                        "Check that the symbol/address is valid",
+                        "Ensure symbols are loaded (.reload)",
+                        "Verify the module is loaded (lm)",
+                        "Try a different breakpoint format"
+                    ]
+                }
+            
+            # Step 3: List breakpoints to confirm
+            try:
+                success, list_result, metadata = execute_optimized_command("bl", "quick")
+                results.append({
+                    "step": "list_breakpoints",
+                    "command": "bl",
+                    "success": success,
+                    "result": list_result,
+                    "execution_time": metadata.get("response_time", 0)
+                })
+            except Exception as e:
+                results.append({
+                    "step": "list_breakpoints",
+                    "command": "bl",
+                    "success": False,
+                    "error": str(e)
+                })
+            
+            # Step 4: Continue execution if requested
+            execution_result = None
+            if continue_execution:
+                logger.debug("Continuing execution")
+                try:
+                    success, exec_result, metadata = execute_optimized_command("g", "execution")
+                    execution_result = {
+                        "step": "continue_execution",
+                        "command": "g",
+                        "success": success,
+                        "result": exec_result,
+                        "execution_time": metadata.get("response_time", 0)
+                    }
+                    results.append(execution_result)
+                    
+                    if not success:
+                        logger.warning(f"Failed to continue execution: {exec_result}")
+                        
+                except Exception as e:
+                    execution_result = {
+                        "step": "continue_execution",
+                        "command": "g",
+                        "success": False,
+                        "error": str(e)
+                    }
+                    results.append(execution_result)
+            
+            # Prepare comprehensive response
+            total_time = sum(r.get("execution_time", 0) for r in results)
+            successful_steps = sum(1 for r in results if r.get("success", False))
+            
+            response = {
+                "success": True,
+                "breakpoint": breakpoint,
+                "breakpoint_set": results[1 if clear_existing else 0].get("success", False),
+                "execution_continued": execution_result.get("success", False) if execution_result else False,
+                "steps_completed": results,
+                "summary": {
+                    "total_steps": len(results),
+                    "successful_steps": successful_steps,
+                    "total_execution_time": total_time,
+                    "context_saved": context_saved
+                }
+            }
+            
+            # Add debugging guidance
+            guidance = []
+            if execution_result and execution_result.get("success"):
+                guidance.extend([
+                    "✅ Breakpoint set and execution continued",
+                    "🎯 Target will break when the specified location is hit",
+                    "📊 Use 'k' to examine call stack when breakpoint hits",
+                    "🔍 Use 'r' to examine registers when breakpoint hits",
+                    "➡️ Use 'p' to step over or 'g' to continue after breakpoint"
+                ])
+            elif results[1 if clear_existing else 0].get("success", False):
+                guidance.extend([
+                    "✅ Breakpoint set successfully",
+                    "⏸️ Use 'g' to continue execution and hit the breakpoint",
+                    "🎯 Target will break when the specified location is hit"
+                ])
+            
+            if clear_existing and results[0].get("success", False):
+                guidance.append("🧹 Previous breakpoints cleared successfully")
+            
+            response["guidance"] = guidance
+            
+            # Add troubleshooting tips if something failed
+            if successful_steps < len(results):
+                response["troubleshooting"] = [
+                    "Some steps failed - check individual step results",
+                    "Verify target is connected and responsive",
+                    "Check that symbols are properly loaded",
+                    "Ensure the breakpoint location is valid"
+                ]
+            
+            return response
+            
+        except Exception as e:
+            enhanced_error = enhance_error("unexpected", 
+                                         tool_name="breakpoint_and_continue", 
+                                         original_error=str(e))
+            error_dict = enhanced_error.to_dict()
+            error_dict["partial_results"] = results
+            error_dict["breakpoint"] = breakpoint
+            return error_dict 

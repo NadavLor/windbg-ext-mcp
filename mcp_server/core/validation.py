@@ -120,8 +120,8 @@ def is_safe_for_automation(command: str) -> bool:
     """
     Check if a command is safe for automated execution by LLMs.
     
-    This is a stricter check than validate_command() and excludes
-    commands that change execution state.
+    This function now allows execution control and breakpoint commands for LLM automation,
+    enabling automated debugging workflows while still blocking genuinely dangerous operations.
     
     Args:
         command: The command to check
@@ -134,25 +134,31 @@ def is_safe_for_automation(command: str) -> bool:
     
     command = command.strip().lower()
     
-    # Never allow dangerous commands
+    # Never allow dangerous commands that could terminate sessions or cause damage
     base_command = command.split()[0] if command.split() else ""
     if base_command in DANGEROUS_COMMANDS:
         return False
     
-    # Don't allow execution control in automation
+    # CHANGED: Now allow execution control commands for LLM automation
+    # These are essential for interactive debugging workflows
     execution_commands = {"g", "p", "t", "gu", "wt"}
     if base_command in execution_commands:
-        return False
+        logger.info(f"Allowing execution control command for automation: {base_command}")
+        return True
     
-    # Don't allow context switches in automation (should be explicit)
-    context_commands = {".thread", ".process"}
-    if base_command in context_commands:
-        return False
-    
-    # Don't allow breakpoint modifications in automation
+    # CHANGED: Now allow breakpoint commands for LLM automation  
+    # These are needed for setting up debugging scenarios
     breakpoint_commands = {"bp", "ba", "bu", "bm", "bc", "bd", "be"}
     if base_command in breakpoint_commands:
-        return False
+        logger.info(f"Allowing breakpoint command for automation: {base_command}")
+        return True
+    
+    # CHANGED: Now allow context switches for LLM automation
+    # These are often needed for comprehensive debugging
+    context_commands = {".thread", ".process"}
+    if base_command in context_commands:
+        logger.info(f"Allowing context switch command for automation: {base_command}")
+        return True
     
     # Everything else that passes basic validation is safe for automation
     is_valid, _ = validate_command(command)
