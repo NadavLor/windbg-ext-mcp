@@ -79,20 +79,23 @@ The project uses a hybrid architecture optimized for network kernel debugging:
      msbuild /p:Configuration=Release /p:Platform=x64
      ```
 
-2. **Install and start the MCP server:**
+2. **Load the extension in WinDbg:**
    ```sh
-   poetry install
-   poetry run python mcp_server/server.py
+   .load C:\path\to\windbgmcpExt.dll
    ```
 
-3. **Load the extension in WinDbg:**
-   ```sh
-   .load C:\path\to\windbg-ext-mcp\extension\x64\Release\windbgmcpExt.dll
-   ```
-
-4. **Configure your LLM client:**
+3. **Configure your LLM client:**
    ```sh
    python install_client_config.py
+   ```
+
+4. **Install and start the MCP server:**
+   ```sh
+   poetry install
+   ```
+   Now either start the server via the LLM client or manually:
+   ```sh
+   poetry run python mcp_server/server.py
    ```
 
 ### For first time debuggers
