@@ -220,8 +220,27 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
             double execution_time = std::chrono::duration<double>(end_time - start_time).count();
             g_lastExecutionTime = execution_time;
             
+            // Check if this is a memory edit command that normally returns no output on success
+            bool isMemoryEditCommand = false;
+            std::string trimmedCommand = command;
+            // Remove leading whitespace
+            trimmedCommand.erase(0, trimmedCommand.find_first_not_of(" \t\n\r\f\v"));
+            
+            // Check for memory edit commands (eq, ed, eb, ew, etc.)
+            if (trimmedCommand.length() >= 2) {
+                std::string cmdPrefix = trimmedCommand.substr(0, 2);
+                if (cmdPrefix == "eq" || cmdPrefix == "ed" || cmdPrefix == "eb" || 
+                    cmdPrefix == "ew" || cmdPrefix == "ea" || cmdPrefix == "eu") {
+                    // Verify it's actually a memory edit command (has address parameter)
+                    size_t spacePos = trimmedCommand.find(' ');
+                    if (spacePos != std::string::npos && spacePos == 2) {
+                        isMemoryEditCommand = true;
+                    }
+                }
+            }
+            
             // Check if the output is empty or contains error messages
-            if (output.empty()) {
+            if (output.empty() && !isMemoryEditCommand) {
                 return CreateDetailedErrorResponse(
                     message.value("id", 0),
                     "execute_command",
@@ -232,17 +251,9 @@ json CommandHandlers::ExecuteCommandHandler(const json& message) {
                 );
             }
             
-            // Check for common error patterns
-            if (output.find("Usage:") != std::string::npos && 
-                output.find("options") != std::string::npos) {
-                return CreateDetailedErrorResponse(
-                    message.value("id", 0),
-                    "execute_command",
-                    "Command syntax error: " + output,
-                    ErrorCategory::CommandSyntax,
-                    E_INVALIDARG,
-                    "Check the command syntax and arguments."
-                );
+            // For memory edit commands, empty output means success
+            if (output.empty() && isMemoryEditCommand) {
+                output = "Memory edit command completed successfully.";
             }
             
             return CreateSuccessResponseWithMetadata(
@@ -696,6 +707,30 @@ std::string CommandHandlers::ExecuteWinDbgCommand(const std::string& command, un
     
     // Check for empty output
     if (result.output.empty() || result.output == "NONE" || result.output == "None") {
+        // Check if this is a memory edit command that normally returns no output on success
+        bool isMemoryEditCommand = false;
+        std::string trimmedCommand = command;
+        // Remove leading whitespace
+        trimmedCommand.erase(0, trimmedCommand.find_first_not_of(" \t\n\r\f\v"));
+        
+        // Check for memory edit commands (eq, ed, eb, ew, etc.)
+        if (trimmedCommand.length() >= 2) {
+            std::string cmdPrefix = trimmedCommand.substr(0, 2);
+            if (cmdPrefix == "eq" || cmdPrefix == "ed" || cmdPrefix == "eb" || 
+                cmdPrefix == "ew" || cmdPrefix == "ea" || cmdPrefix == "eu") {
+                // Verify it's actually a memory edit command (has address parameter)
+                size_t spacePos = trimmedCommand.find(' ');
+                if (spacePos != std::string::npos && spacePos == 2) {
+                    isMemoryEditCommand = true;
+                }
+            }
+        }
+        
+        // For memory edit commands, empty output means success
+        if (isMemoryEditCommand) {
+            return "Memory edit command completed successfully.";
+        }
+        
         // For certain critical commands, try again with a different approach
         if (command.find("!process") != std::string::npos) {
             // Try with .process command instead
