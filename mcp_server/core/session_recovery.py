@@ -15,8 +15,13 @@ from enum import Enum
 
 from .communication import send_command, test_connection, CommunicationError, TimeoutError, ConnectionError
 from .connection_resilience import ConnectionState, VMState, execute_resilient_command
+from .unified_cache import (
+    cache_session_snapshot, get_cached_session_snapshot, clear_session_cache
+)
 
 logger = logging.getLogger(__name__)
+
+# Remove old session cache implementation - now using unified cache
 
 class SessionState(Enum):
     """Current debugging session state."""
@@ -82,7 +87,10 @@ class SessionRecovery:
     
     def capture_session_snapshot(self, session_id: str = None) -> Optional[SessionSnapshot]:
         """
-        Capture current debugging session state.
+        Capture current debugging session state with intelligent caching.
+        
+        Uses a 30-second cache to prevent redundant command execution when called frequently.
+        This significantly reduces command spam while maintaining data freshness.
         
         Args:
             session_id: Optional session identifier
@@ -91,6 +99,13 @@ class SessionRecovery:
             Session snapshot or None if capture fails
         """
         logger.debug("Capturing session snapshot...")
+        
+        # Check for cached session first (unless specific session_id requested)
+        if session_id is None:
+            cached_session = get_cached_session_snapshot()
+            if cached_session is not None:
+                self.current_session = cached_session
+                return cached_session
         
         try:
             if not session_id:
@@ -102,6 +117,8 @@ class SessionRecovery:
                 debugging_mode="unknown",
                 target_info={}
             )
+            
+            logger.debug("Executing full session capture (no valid cache)")
             
             # Detect debugging mode
             try:
@@ -194,6 +211,10 @@ class SessionRecovery:
             self.current_session = snapshot
             self.session_state = SessionState.ACTIVE
             
+            # Cache the snapshot (unless specific session_id was requested)
+            if session_id.startswith("session_"):  # Auto-generated session ID
+                cache_session_snapshot("current", snapshot)
+            
             logger.info(f"Captured session snapshot: {session_id}")
             return snapshot
             
@@ -211,24 +232,34 @@ class SessionRecovery:
         try:
             # Test basic connectivity
             if not test_connection():
+                # Clear cache since connection is lost
+                clear_session_cache()
                 return True, "Extension connection lost"
             
             # Test WinDbg responsiveness with kernel-compatible command
             success, result, metadata = execute_resilient_command("version", "quick", max_retries=1)
             if not success:
+                # Clear cache since WinDbg is unresponsive
+                clear_session_cache()
                 return True, f"WinDbg unresponsive: {result}"
             
             # Check if target is still connected (for kernel debugging)
             if self.current_session and self.current_session.debugging_mode == "kernel":
                 success, result, _ = execute_resilient_command(".reboot_target", "quick", max_retries=1)
                 if "Target rebooted" in result:
+                    # Clear cache since target rebooted (major state change)
+                    clear_session_cache()
                     return True, "Target VM rebooted"
                 elif "Target not connected" in result:
+                    # Clear cache since target disconnected
+                    clear_session_cache()
                     return True, "Target VM disconnected"
             
             return False, "Session active"
             
         except Exception as e:
+            # Clear cache on any detection errors
+            clear_session_cache()
             return True, f"Detection error: {str(e)}"
     
     def attempt_session_recovery(self, recovery_strategy: RecoveryStrategy = None) -> Tuple[bool, str, Dict[str, Any]]:
@@ -505,16 +536,27 @@ class SessionRecovery:
 session_recovery = SessionRecovery()
 
 # Convenience functions
-def capture_current_session(session_id: str = None) -> Optional[SessionSnapshot]:
-    """Capture current debugging session state."""
+def capture_current_session(session_id: str = None, force_refresh: bool = False) -> Optional[SessionSnapshot]:
+    """
+    Capture current debugging session state.
+    
+    Args:
+        session_id: Optional session identifier  
+        force_refresh: If True, bypass cache and force fresh capture
+        
+    Returns:
+        Session snapshot or None if capture fails
+    """
+    if force_refresh:
+        clear_session_cache()
     return session_recovery.capture_session_snapshot(session_id)
 
 def check_session_health() -> Tuple[bool, str]:
-    """Check if session is healthy or interrupted."""
+    """Check if the debugging session is healthy."""
     return session_recovery.detect_session_interruption()
 
 def recover_session(strategy: RecoveryStrategy = None) -> Tuple[bool, str, Dict[str, Any]]:
-    """Attempt to recover debugging session."""
+    """Attempt to recover the debugging session."""
     return session_recovery.attempt_session_recovery(strategy)
 
 def get_recovery_recommendations() -> Dict[str, Any]:
@@ -527,4 +569,6 @@ def save_current_session() -> bool:
 
 def load_previous_session() -> Optional[SessionSnapshot]:
     """Load previous session state from disk."""
-    return session_recovery.load_session_state() 
+    return session_recovery.load_session_state()
+
+# clear_session_cache is imported from unified_cache 

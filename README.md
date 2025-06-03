@@ -51,6 +51,13 @@ The project uses a hybrid architecture optimized for network kernel debugging:
 - **Data Compression**: Automatic compression for large outputs
 - **Session Recovery**: State preservation and recovery for interrupted sessions
 
+### 🛠️ Natural Language Hacking
+- *"Hide explorer.exe using EPROCESS unlink and PspCidTable Unlink"*
+- *"Make OneDrive.exe appear to have no open handles"*
+- *"Make notepad.exe resistance to termination and kill attempts"*
+- *"Install invisible system call hooks that dont modify SSDT"*
+- *"Hide network connections from netstat while keeping them active"*
+- *"Make files invisible to directory enumeration but accessible by direct path"*
 ---
 
 ## 🚀 Quick Start

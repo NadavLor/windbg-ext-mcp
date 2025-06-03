@@ -18,10 +18,12 @@ from core.connection_resilience import (
 )
 from core.session_recovery import (
     capture_current_session, check_session_health, recover_session,
-    get_recovery_recommendations, save_current_session, SessionState, RecoveryStrategy
+    get_recovery_recommendations, save_current_session, SessionState, RecoveryStrategy,
+    clear_session_cache
 )
 from core.performance import get_performance_report
 from core.async_ops import get_async_stats
+from core.unified_cache import get_cache_stats
 
 from .tool_utilities import detect_kernel_mode
 
@@ -357,7 +359,7 @@ def register_session_tools(mcp: FastMCP):
         
         Args:
             ctx: The MCP context
-            action: Action to perform - "status", "capture", "recover", "health", "save", "list_strategies"
+            action: Action to perform - "status", "capture", "recover", "health", "save", "list_strategies", "cache_stats"
             strategy: Recovery strategy for recover action - "automatic", "manual", "conservative"
             
         Returns:
@@ -526,10 +528,23 @@ def register_session_tools(mcp: FastMCP):
                     "recommendation": "Use 'automatic' for most scenarios, 'conservative' for critical environments"
                 }
             
+            elif action == "clear_cache":
+                clear_session_cache()
+                return {
+                    "cache_cleared": True,
+                    "status": "Session cache cleared"
+                }
+            
+            elif action == "cache_stats":
+                cache_stats = get_cache_stats()
+                return {
+                    "cache_stats": cache_stats
+                }
+            
             else:
                 return {
                     "error": f"Unknown action '{action}'",
-                    "available_actions": ["status", "capture", "recover", "health", "save", "list_strategies"],
+                    "available_actions": ["status", "capture", "recover", "health", "save", "list_strategies", "clear_cache", "cache_stats"],
                     "help": get_parameter_help("session_manager")
                 }
                 

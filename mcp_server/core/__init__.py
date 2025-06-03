@@ -14,6 +14,18 @@ from .communication import (
     ConnectionError
 )
 
+from .unified_cache import (
+    start_startup_cache,
+    stop_startup_cache,
+    cache_command_result,
+    get_cached_command_result,
+    cache_session_snapshot,
+    get_cached_session_snapshot,
+    clear_session_cache,
+    get_cache_stats,
+    unified_cache
+)
+
 from .validation import (
     validate_command,
     is_safe_for_automation
@@ -85,7 +97,6 @@ from .performance import (
     performance_optimizer,
     PerformanceOptimizer,
     OptimizationLevel,
-    ResultCache,
     DataCompressor,
     StreamingHandler,
     CommandOptimizer,
@@ -116,6 +127,17 @@ __all__ = [
     "CommunicationError",
     "TimeoutError",
     "ConnectionError",
+    
+    # Unified Cache
+    "start_startup_cache",
+    "stop_startup_cache",
+    "cache_command_result",
+    "get_cached_command_result", 
+    "cache_session_snapshot",
+    "get_cached_session_snapshot",
+    "clear_session_cache",
+    "get_cache_stats",
+    "unified_cache",
     
     # Validation
     "validate_command",
@@ -180,7 +202,6 @@ __all__ = [
     "performance_optimizer",
     "PerformanceOptimizer",
     "OptimizationLevel",
-    "ResultCache",
     "DataCompressor",
     "StreamingHandler",
     "CommandOptimizer",

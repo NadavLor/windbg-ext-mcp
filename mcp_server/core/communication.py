@@ -28,8 +28,20 @@ from config import (
     get_timeout_for_command, get_retry_delay
 )
 from .retry_utils import resilient_command, RetryableError, NonRetryableError
+from .unified_cache import (
+    start_startup_cache, stop_startup_cache, 
+    cache_startup_command, get_startup_cached_result
+)
 
 logger = logging.getLogger(__name__)
+
+# Remove old startup cache implementation - now using unified cache
+
+# These functions are now imported from unified_cache:
+# - start_startup_cache()
+# - stop_startup_cache() 
+# - cache_startup_command()
+# - get_startup_cached_result()
 
 class CommunicationError(Exception):
     """Base exception for communication errors."""
@@ -456,12 +468,22 @@ def test_connection() -> bool:
         True if connection is working, False otherwise
     """
     try:
-        # Use a very simple and short timeout test to minimize extension load
-        manager = get_communication_manager()
-        result = manager._send_command_internal("version", timeout_ms=3000)
-        is_connected = bool(result and len(result) > 10 and not result.startswith("Error:"))
+        # Check startup cache first to avoid redundant calls
+        cached_result = get_startup_cached_result("version")
+        if cached_result is not None:
+            logger.debug("Using cached version result for connection test")
+            is_connected = bool(cached_result and len(cached_result) > 10 and not cached_result.startswith("Error:"))
+        else:
+            # Use a very simple and short timeout test to minimize extension load
+            manager = get_communication_manager()
+            result = manager._send_command_internal("version", timeout_ms=3000)
+            is_connected = bool(result and len(result) > 10 and not result.startswith("Error:"))
+            
+            # Cache the result during startup
+            cache_startup_command("version", result)
         
         # Update health flags regardless of result to maintain consistent state
+        manager = get_communication_manager()
         with manager._health_lock:
             manager._connection_health.extension_responsive = is_connected
             manager._connection_health.target_responsive = is_connected
@@ -496,11 +518,19 @@ def test_target_connection() -> Tuple[bool, str]:
         Tuple of (is_connected, status_message)
     """
     try:
-        manager = get_communication_manager()
-        
-        # Try a quick kernel command to test target responsiveness
-        # Use direct internal command to avoid triggering health monitoring
-        result = manager._send_command_internal("vertarget", timeout_ms=5000)
+        # Check startup cache first to avoid redundant calls
+        cached_result = get_startup_cached_result("vertarget")
+        if cached_result is not None:
+            logger.debug("Using cached vertarget result for target connection test")
+            result = cached_result
+        else:
+            manager = get_communication_manager()
+            # Try a quick kernel command to test target responsiveness
+            # Use direct internal command to avoid triggering health monitoring
+            result = manager._send_command_internal("vertarget", timeout_ms=5000)
+            
+            # Cache the result during startup
+            cache_startup_command("vertarget", result)
         
         if "not connected" in result.lower():
             return False, "WinDbg is not connected to a debugging target"
@@ -519,6 +549,7 @@ def test_target_connection() -> Tuple[bool, str]:
 def diagnose_connection_issues() -> Dict[str, Any]:
     """
     Perform comprehensive connection diagnostics.
+    This function is called when basic connection tests fail, so it focuses on diagnosis rather than re-testing.
     
     Returns:
         Dictionary with diagnostic information
@@ -533,7 +564,7 @@ def diagnose_connection_issues() -> Dict[str, Any]:
     }
     
     try:
-        # Test extension availability
+        # Get current health status
         manager = get_communication_manager()
         health = manager.get_connection_health()
         
@@ -545,16 +576,16 @@ def diagnose_connection_issues() -> Dict[str, Any]:
             "last_error": health.last_error
         }
         
-        # Test extension connection with safe approach
-        try:
-            version_result = manager._send_command_internal("version", timeout_ms=3000)
+        # Since we're here, basic connection test already failed
+        # Check if we have any cached results that might give us clues
+        cached_version = get_startup_cached_result("version")
+        if cached_version is not None:
             diagnostics["extension_available"] = True
-        except ConnectionError:
+            logger.debug("Extension was responsive during startup (cached version available)")
+        else:
             diagnostics["recommendations"].append("Load the WinDbg MCP extension (.load extension)")
-        except Exception as e:
-            diagnostics["recommendations"].append(f"Extension error: {str(e)}")
         
-        # Test target connection
+        # Test target connection to see if it's a target-specific issue
         target_connected, target_status = test_target_connection()
         diagnostics["target_connected"] = target_connected
         diagnostics["target_status"] = target_status
@@ -562,7 +593,7 @@ def diagnose_connection_issues() -> Dict[str, Any]:
         if not target_connected:
             diagnostics["recommendations"].append("Connect WinDbg to a debugging target")
         
-        # Detect network debugging
+        # Detect network debugging scenarios
         if "network" in target_status.lower() or health.network_debugging_mode in [DebuggingMode.VM_NETWORK, DebuggingMode.REMOTE]:
             diagnostics["network_debugging"] = True
             if health.consecutive_failures > 0:

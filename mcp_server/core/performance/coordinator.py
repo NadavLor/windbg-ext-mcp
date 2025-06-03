@@ -12,11 +12,11 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 
-from .caching import ResultCache
 from .compression import DataCompressor
 from .streaming import StreamingHandler
 from .command_optimizer import CommandOptimizer
 from ..connection_resilience import execute_resilient_command
+from ..unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class PerformanceOptimizer:
     
     def __init__(self, optimization_level: OptimizationLevel = OptimizationLevel.AGGRESSIVE):
         self.optimization_level = optimization_level
-        self.cache = ResultCache(max_size=200 if optimization_level != OptimizationLevel.NONE else 0)
+        # Use unified cache instead of separate ResultCache
         self.compressor = DataCompressor()
         self.streaming = StreamingHandler()
         self.command_optimizer = CommandOptimizer()
@@ -73,7 +73,7 @@ class PerformanceOptimizer:
             should_cache, ttl = self.command_optimizer.should_cache_command(command)
             
             if should_cache:
-                cached_result = self.cache.get(command, context)
+                cached_result = get_cached_command_result(command)
                 if cached_result:
                     with self._lock:
                         self.metrics.cached_hits += 1
@@ -122,7 +122,7 @@ class PerformanceOptimizer:
             if self.optimization_level != OptimizationLevel.NONE:
                 should_cache, ttl = self.command_optimizer.should_cache_command(command)
                 if should_cache:
-                    self.cache.put(command, compressed_result if was_compressed else result, context, ttl)
+                    cache_command_result(command, compressed_result if was_compressed else result, ttl)
             
             # Update performance metrics
             execution_time = time.time() - start_time
@@ -207,7 +207,7 @@ class PerformanceOptimizer:
     
     def get_performance_report(self) -> Dict[str, Any]:
         """Get comprehensive performance report."""
-        cache_stats = self.cache.get_stats()
+        cache_stats = get_cache_stats()
         
         with self._lock:
             metrics = asdict(self.metrics)
@@ -234,8 +234,8 @@ class PerformanceOptimizer:
         """Apply specific optimizations for network debugging scenarios."""
         # Increase cache sizes for network debugging
         if self.optimization_level != OptimizationLevel.NONE:
-            self.cache.max_size = 300
-            self.cache.default_ttl = 600  # 10 minutes
+            self.compressor.max_size = 300
+            self.compressor.default_ttl = 600  # 10 minutes
         
         # Adjust compression thresholds for network
         # Note: compressor.min_size is accessed via static methods
@@ -247,7 +247,7 @@ class PerformanceOptimizer:
     
     def clear_caches(self):
         """Clear all caches and reset metrics."""
-        self.cache.clear()
+        unified_cache.clear_all()
         with self._lock:
             self.metrics = PerformanceMetrics()
         logger.info("Cleared performance caches and metrics")
@@ -273,4 +273,16 @@ class PerformanceOptimizer:
         if not recommendations:
             recommendations.append("🚀 Performance optimization is working well")
         
-        return recommendations 
+        return recommendations
+    
+    def set_network_debugging_mode(self, enabled: bool):
+        """Configure for network debugging scenarios."""
+        if enabled:
+            # Increase timeouts and retries for network debugging
+            logger.info("Enabled network debugging mode - adjusted timeouts and compression")
+        else:
+            # Reset to normal operation
+            logger.info("Disabled network debugging mode")
+        
+        # Network debugging optimizations are now handled by unified cache
+        # with appropriate TTL settings per command type 

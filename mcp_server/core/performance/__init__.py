@@ -14,7 +14,6 @@ The package is organized into focused modules:
 """
 
 # Import core classes and functions
-from .caching import ResultCache, CacheEntry
 from .compression import DataCompressor, DataSize
 from .streaming import StreamingHandler
 from .command_optimizer import CommandOptimizer
@@ -56,8 +55,6 @@ def clear_performance_caches():
 
 __all__ = [
     # Core classes
-    "ResultCache",
-    "CacheEntry", 
     "DataCompressor",
     "StreamingHandler",
     "CommandOptimizer",

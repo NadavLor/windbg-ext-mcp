@@ -27,6 +27,10 @@ from core.communication import (
     set_debugging_mode, get_connection_health, diagnose_connection_issues,
     NetworkDebuggingError
 )
+from core.unified_cache import (
+    get_startup_cached_result, cache_startup_command,
+    start_startup_cache, stop_startup_cache, get_cache_stats
+)
 from core.session_recovery import capture_current_session, save_current_session
 from core.performance import (
     set_optimization_level, get_performance_report, 
@@ -57,30 +61,39 @@ if DEBUG_ENABLED:
 # Create the FastMCP server instance
 mcp = FastMCP()
 
-def detect_debugging_mode() -> str:
+def detect_debugging_mode(target_connected: bool, target_status: str) -> str:
     """
     Detect the current debugging mode with enhanced network debugging detection.
+    
+    Args:
+        target_connected: Whether target connection was successful
+        target_status: Target connection status message
         
     Returns:
         "kernel", "user", or "unknown"
     """
     try:
-        # Test target connection first
-        target_connected, target_status = test_target_connection()
-        
+        # Use already-tested target connection results
         if not target_connected:
             logger.warning(f"Target not connected: {target_status}")
             return "unknown"
         
-        # Detect kernel mode
+        # Detect kernel mode from target status
         if "kernel" in target_status.lower():
             return "kernel"
         elif "user" in target_status.lower():
             return "user"
         
-        # Try kernel-mode detection commands
+        # Try kernel-mode detection commands - check cache first
         try:
-            result = send_command(".effmach", timeout_ms=5000)
+            cached_result = get_startup_cached_result(".effmach")
+            if cached_result is not None:
+                logger.debug("Using cached .effmach result for mode detection")
+                result = cached_result
+            else:
+                result = send_command(".effmach", timeout_ms=5000)
+                cache_startup_command(".effmach", result)
+                
             if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
                 return "kernel"
         except NetworkDebuggingError as e:
@@ -89,9 +102,16 @@ def detect_debugging_mode() -> str:
         except:
             pass
         
-        # Try alternative kernel mode detection
+        # Try alternative kernel mode detection - check cache first
         try:
-            result = send_command("!pcr", timeout_ms=5000) 
+            cached_result = get_startup_cached_result("!pcr")
+            if cached_result is not None:
+                logger.debug("Using cached !pcr result for mode detection")
+                result = cached_result
+            else:
+                result = send_command("!pcr", timeout_ms=5000)
+                cache_startup_command("!pcr", result)
+                
             if result and not result.startswith("Error:") and "is not a recognized" not in result:
                 return "kernel"
         except NetworkDebuggingError as e:
@@ -107,12 +127,15 @@ def detect_debugging_mode() -> str:
         logger.error(f"Error detecting debugging mode: {e}")
         return "unknown"
 
-def setup_resilience_features(debugging_mode: str):
+def setup_resilience_features(debugging_mode: str, connected: bool, target_connected: bool, target_status: str):
     """
     Set up connection resilience features based on debugging mode with hybrid architecture.
     
     Args:
         debugging_mode: The detected debugging mode
+        connected: Whether extension connection was successful
+        target_connected: Whether target connection was successful  
+        target_status: Target connection status message
     """
     try:
         # Set appropriate network mode for the new communication manager
@@ -130,34 +153,30 @@ def setup_resilience_features(debugging_mode: str):
         # start_connection_monitoring()
         logger.info("Connection monitoring available but not auto-started to prevent WinDbg crashes")
         
-        # Perform connection diagnostics
-        try:
-            diagnostics = diagnose_connection_issues()
-            logger.info("Connection diagnostics completed:")
-            logger.info(f"  - Extension available: {diagnostics['extension_available']}")
-            logger.info(f"  - Target connected: {diagnostics['target_connected']}")
-            logger.info(f"  - Network debugging: {diagnostics['network_debugging']}")
-            
-            if diagnostics.get("recommendations"):
-                logger.info("Recommendations:")
-                for rec in diagnostics["recommendations"]:
-                    logger.info(f"  • {rec}")
-        except Exception as e:
-            logger.warning(f"Could not run connection diagnostics: {e}")
+        # Log connection status (already tested, no need to re-test)
+        logger.info("Connection status summary:")
+        logger.info(f"  - Extension available: {connected}")
+        logger.info(f"  - Target connected: {target_connected}")
+        logger.info(f"  - Target status: {target_status}")
+        logger.info(f"  - Network debugging: {'network' in target_status.lower()}")
         
-        # Capture initial session state if connected
-        if test_connection():
-            try:
-                session_snapshot = capture_current_session("startup_session")
-                if session_snapshot:
-                    saved = save_current_session()
-                    logger.info(f"Captured initial session state: {session_snapshot.session_id} (saved: {saved})")
-                else:
-                    logger.warning("Failed to capture initial session state")
-            except NetworkDebuggingError as e:
-                logger.warning(f"Network debugging issue during session capture: {e}")
-            except Exception as e:
-                logger.warning(f"Could not capture initial session state: {e}")
+        # Capture initial session state if connected (reuse existing connection test result)
+        if connected:
+            # DISABLED: Session capture sends 9+ commands during startup causing spam
+            # This can be enabled later via tools if needed
+            
+            # try:
+            #     session_snapshot = capture_current_session("startup_session")
+            #     if session_snapshot:
+            #         saved = save_current_session()
+            #         logger.info(f"Captured initial session state: {session_snapshot.session_id} (saved: {saved})")
+            #     else:
+            #         logger.warning("Failed to capture initial session state")
+            # except NetworkDebuggingError as e:
+            #     logger.warning(f"Network debugging issue during session capture: {e}")
+            # except Exception as e:
+            #     logger.warning(f"Could not capture initial session state: {e}")
+            pass
         
     except Exception as e:
         logger.warning(f"Failed to setup resilience features: {e}")
@@ -210,6 +229,10 @@ def main():
     """
     logger.info("Starting WinDbg MCP Server (Modular Architecture Edition)")
     
+    # Enable startup cache to prevent redundant commands during initialization
+    start_startup_cache()
+    logger.debug("Startup cache enabled to prevent redundant commands")
+    
     # Get tool information from the new modular system
     tool_info = get_tool_info()
     
@@ -228,6 +251,10 @@ def main():
     logger.info("Testing connection to WinDbg extension...")
     logger.info("=" * 50)
     
+    connected = False
+    target_connected = False
+    target_status = "Not tested"
+    
     try:
         connected = test_connection()
         if connected:
@@ -244,7 +271,7 @@ def main():
             logger.info("")
             logger.info("Diagnosing connection issues...")
             
-            # Run comprehensive diagnostics
+            # Run comprehensive diagnostics only when connection failed
             diagnostics = diagnose_connection_issues()
             logger.info(f"Extension available: {diagnostics['extension_available']}")
             logger.info(f"Target connected: {diagnostics['target_connected']}")
@@ -258,6 +285,8 @@ def main():
         logger.info(f"⚠ Network debugging issue detected: {e}")
         logger.info("Note: This is common with VM-based kernel debugging")
         connected = True  # Assume connected for network debugging scenarios
+        target_connected = True
+        target_status = "Network debugging (assumed connected)"
     except Exception as e:
         logger.info(f"✗ Connection test failed: {e}")
         connected = False
@@ -266,16 +295,20 @@ def main():
     
     # Detect debugging mode and set up features
     if connected:
-        debugging_mode = detect_debugging_mode()
+        debugging_mode = detect_debugging_mode(target_connected, target_status)
         logger.info(f"Detected debugging mode: {debugging_mode}")
         
-        # Setup resilience features
-        setup_resilience_features(debugging_mode)
+        # Setup resilience features - pass existing connection test results
+        setup_resilience_features(debugging_mode, connected, target_connected, target_status)
         
         # Setup performance optimization
         setup_performance_optimization(debugging_mode)
         
         logger.info("")
+    
+    # Disable startup cache now that initialization is complete
+    stop_startup_cache()
+    logger.debug("Startup cache disabled - initialization complete")
     
     # Register all tools with the modular system
     logger.info("Registering tools with modular architecture...")
