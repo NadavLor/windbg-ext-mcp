@@ -29,34 +29,6 @@ std::atomic<bool> g_dllUnloading(false);
 HANDLE g_shutdownEvent = nullptr;
 
 /**
- * @brief Cleanup routine called when the process is terminating.
- * 
- * This function ensures all resources are properly released.
- * 
- * @param Parameter Not used.
- * @param TimerOrWaitFired Not used.
- */
-VOID CALLBACK CleanupRoutine(PVOID Parameter, BOOLEAN TimerOrWaitFired) {
-	// If a clean shutdown hasn't already been performed, do it now
-	if (!g_dllUnloading.exchange(true)) {
-		dprintf("WinDbg MCP Extension: Process termination detected, cleaning up resources...\n");
-		
-		// Stop the MCP server and free resources
-		if (g_mcpServer) {
-			g_mcpServer->Stop();
-			g_mcpServer.reset();
-		}
-		
-		// Signal the shutdown event if it exists
-		if (g_shutdownEvent != nullptr) {
-			SetEvent(g_shutdownEvent);
-			CloseHandle(g_shutdownEvent);
-			g_shutdownEvent = nullptr;
-		}
-	}
-}
-
-/**
  * @brief Initialize the debug extension.
  * 
  * This function is called when the extension is loaded by WinDbg.
@@ -86,17 +58,10 @@ HRESULT __stdcall DebugExtensionInitialize(PULONG version, PULONG flags) {
 	*version = DEBUG_EXTENSION_VERSION(1, 0);
 	*flags = 0;
 
-	// Create shutdown event
+	// Create shutdown event for internal synchronization
 	g_shutdownEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	if (g_shutdownEvent == nullptr) {
 		dprintf("Warning: Failed to create shutdown event\n");
-	}
-	
-	// Register process exit callback for cleanup
-	PVOID token = nullptr;
-	if (!RegisterWaitForSingleObject(&token, GetCurrentProcess(),
-		CleanupRoutine, nullptr, INFINITE, WT_EXECUTEONLYONCE)) {
-		dprintf("Warning: Failed to register process exit callback\n");
 	}
 
 	// Initialize MCP server

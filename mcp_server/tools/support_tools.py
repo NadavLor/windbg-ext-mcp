@@ -131,23 +131,26 @@ def register_support_tools(mcp: FastMCP):
                 "tip": "All tools now provide enhanced error messages with suggestions and examples when something goes wrong"
             }
         
-        # Get help for specific tool
-        help_info = get_parameter_help(tool_name, action)
+        # Get help for specific tool - Fixed parameter validation
+        try:
+            help_info = get_parameter_help(tool_name, action)
+        except Exception as e:
+            logger.debug(f"Error getting parameter help for {tool_name}: {e}")
+            help_info = None
         
         if not help_info:
-            enhanced_error = enhance_error("parameter", 
-                                         tool_name="get_help", 
-                                         action="help", 
-                                         missing_param="tool_name")
-            error_dict = enhanced_error.to_dict()
-            error_dict["available_tools"] = [
-                "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
-                "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
-                "connection_manager", "session_manager",
-                "performance_manager", "async_manager", 
-                "troubleshoot", "get_help"
-            ]
-            return error_dict
+            return {
+                "error": f"Tool '{tool_name}' not found or no help available",
+                "error_code": "tool_not_found", 
+                "available_tools": [
+                    "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
+                    "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
+                    "connection_manager", "session_manager",
+                    "performance_manager", "async_manager", 
+                    "troubleshoot", "get_help"
+                ],
+                "suggestion": f"Use get_help() without parameters to see all available tools"
+            }
         
         # Add debugging context information
         current_context = error_enhancer.current_context
@@ -213,95 +216,7 @@ def register_support_tools(mcp: FastMCP):
         
         return help_info 
 
-    @mcp.tool()
-    async def diagnose_hybrid_connection() -> str:
-        """
-        Perform comprehensive connection diagnostics for the hybrid architecture.
-        
-        This tool helps troubleshoot communication issues between:
-        - Cursor ↔ Python MCP Server (stdio transport)
-        - Python MCP Server ↔ WinDbg Extension (named pipe)
-        - WinDbg ↔ Debugging Target (network/serial)
-        
-        Returns:
-            Detailed diagnostic report with recommendations
-        """
-        try:
-            from core.communication import (
-                diagnose_connection_issues, get_connection_health,
-                test_connection, test_target_connection
-            )
-            
-            # Get comprehensive diagnostics
-            diagnostics = diagnose_connection_issues()
-            health = get_connection_health()
-            
-            # Build detailed report
-            report = ["🔍 HYBRID ARCHITECTURE DIAGNOSTICS", "=" * 50, ""]
-            
-            # MCP Server Status
-            report.extend([
-                "📡 MCP Server Status:",
-                f"  • Architecture: Hybrid (stdio + named pipe)",
-                f"  • Timestamp: {diagnostics['timestamp']}",
-                ""
-            ])
-            
-            # Extension Connection Status
-            report.extend([
-                "🔌 WinDbg Extension Connection:",
-                f"  • Available: {'✓' if diagnostics['extension_available'] else '✗'}",
-                f"  • Consecutive failures: {health['consecutive_failures']}",
-                ""
-            ])
-            
-            # Target Connection Status
-            report.extend([
-                "🎯 Debugging Target Connection:",
-                f"  • Connected: {'✓' if diagnostics['target_connected'] else '✗'}",
-                f"  • Network debugging: {'✓' if diagnostics['network_debugging'] else '✗'}",
-                f"  • Mode: {health['debugging_mode']}",
-                ""
-            ])
-            
-            if diagnostics.get('target_status'):
-                report.extend([
-                    f"  • Status: {diagnostics['target_status']}",
-                    ""
-                ])
-            
-            # Health Information
-            if health.get('last_error'):
-                report.extend([
-                    "⚠ Last Error:",
-                    f"  • {health['last_error']}",
-                    ""
-                ])
-            
-            # Recommendations
-            if diagnostics.get('recommendations'):
-                report.extend([
-                    "💡 Recommendations:",
-                ])
-                for rec in diagnostics['recommendations']:
-                    report.append(f"  • {rec}")
-                report.append("")
-            
-            # Network Debugging Specific Advice
-            if diagnostics['network_debugging']:
-                report.extend([
-                    "🌐 Network Debugging Tips:",
-                    "  • Packet loss is common - retry logic is active",
-                    "  • Use longer timeouts for complex commands", 
-                    "  • Consider '.restart' if target becomes unresponsive",
-                    "  • Check VM network settings if connection is unstable",
-                    ""
-                ])
-            
-            return "\n".join(report)
-            
-        except Exception as e:
-            return f"❌ Diagnostic error: {str(e)}"
+
 
     @mcp.tool()
     async def test_windbg_communication() -> str:
@@ -317,7 +232,7 @@ def register_support_tools(mcp: FastMCP):
         try:
             from core.communication import (
                 test_connection, test_target_connection, send_command,
-                get_connection_health, NetworkDebuggingError
+                NetworkDebuggingError
             )
             
             results = ["🧪 WINDBG COMMUNICATION TEST", "=" * 40, ""]
@@ -363,16 +278,12 @@ def register_support_tools(mcp: FastMCP):
             
             results.append("")
             
-            # Show basic summary without misleading status indicators
-            health = get_connection_health()
+            # Show basic summary
             results.extend([
                 "📊 Summary:",
-                f"  • Debugging mode: {health['debugging_mode']}",
-                f"  • Connection failures: {health['consecutive_failures']}",
+                "  • Communication tests completed",
+                "  • Check individual test results above for details",
             ])
-            
-            if health.get('last_successful_command'):
-                results.append(f"  • Last success: {health['last_successful_command']}")
             
             return "\n".join(results)
             
@@ -391,19 +302,9 @@ def register_support_tools(mcp: FastMCP):
             Network debugging troubleshooting guide and status
         """
         try:
-            from core.communication import get_connection_health, send_command, NetworkDebuggingError
+            from core.communication import send_command, NetworkDebuggingError
             
             guide = ["🌐 NETWORK DEBUGGING TROUBLESHOOT", "=" * 45, ""]
-            
-            # Check current status
-            health = get_connection_health()
-            
-            guide.extend([
-                "📋 Current Status:",
-                f"  • Debugging mode: {health['debugging_mode']}",
-                f"  • Connection failures: {health['consecutive_failures']}",
-                ""
-            ])
             
             # Try to detect network debugging issues
             network_issues_detected = False
@@ -411,15 +312,22 @@ def register_support_tools(mcp: FastMCP):
             try:
                 # Try a simple command to test responsiveness
                 result = send_command("version", timeout_ms=3000)
+                guide.extend([
+                    "📋 Current Status:",
+                    "  • Basic communication test passed",
+                    ""
+                ])
             except NetworkDebuggingError as e:
                 network_issues_detected = True
                 guide.extend([
+                    "📋 Current Status:",
                     "⚠ NETWORK ISSUES DETECTED:",
                     f"  • {str(e)}",
                     ""
                 ])
             except Exception as e:
                 guide.extend([
+                    "📋 Current Status:",
                     "❌ Communication Error:",
                     f"  • {str(e)}",
                     ""

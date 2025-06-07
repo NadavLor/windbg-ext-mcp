@@ -5,6 +5,7 @@ This module contains tools for analyzing processes, threads, memory, and kernel 
 """
 import logging
 import re
+import time
 from typing import Dict, Any, List, Optional, Union
 from fastmcp import FastMCP, Context
 
@@ -12,8 +13,11 @@ from core.communication import send_command, TimeoutError, CommunicationError
 from core.context import get_context_manager
 from core.error_handler import enhance_error, error_enhancer, DebugContext, ErrorCategory
 from core.hints import get_parameter_help, validate_tool_parameters
+from core.performance import execute_optimized_command
+from .tool_utilities import detect_kernel_mode
 
 logger = logging.getLogger(__name__)
+
 
 def register_analysis_tools(mcp: FastMCP):
     """Register all analysis tools."""
@@ -311,6 +315,10 @@ def register_analysis_tools(mcp: FastMCP):
         logger.debug(f"Analyze memory action: {action}, address: {address}, type: {type_name}")
         
         try:
+            # Detect debugging mode for mode-specific commands
+            is_kernel_mode = detect_kernel_mode()
+            logger.debug(f"Detected debugging mode: {'kernel' if is_kernel_mode else 'user'}")
+            
             if action == "display":
                 if not address:
                     return {"error": "Memory address required for display action"}
@@ -345,12 +353,82 @@ def register_analysis_tools(mcp: FastMCP):
                 return result
             
             elif action == "regions":
-                # Show memory regions
-                if address:
-                    result = send_command(f"!address {address}", timeout_ms=20000)
+                # Show memory regions - use different commands based on debugging mode
+                if is_kernel_mode:
+                    # Kernel mode: Use kernel-specific memory analysis
+                    if address:
+                        # For specific address in kernel mode, try !pte and !pool commands
+                        try:
+                            pte_result = send_command(f"!pte {address}", timeout_ms=15000)
+                            return {
+                                "debugging_mode": "kernel",
+                                "address_analysis": pte_result,
+                                "note": "Use '!vm' for virtual memory summary, '!pool' for pool analysis, '!pfn' for physical memory info"
+                            }
+                        except Exception as e:
+                            return {
+                                "debugging_mode": "kernel", 
+                                "error": f"PTE analysis failed: {str(e)}",
+                                "suggestion": "Try using kernel-specific commands like '!vm', '!pool', or '!pfn'"
+                            }
+                    else:
+                        # General memory regions overview for kernel mode
+                        try:
+                            # Get virtual memory summary
+                            vm_result = send_command("!vm", timeout_ms=20000)
+                            return {
+                                "debugging_mode": "kernel",
+                                "virtual_memory_summary": vm_result,
+                                "additional_commands": {
+                                    "pool_analysis": "Use run_command(command='!pool') for pool memory analysis",
+                                    "physical_memory": "Use run_command(command='!pfn') for physical frame database",
+                                    "specific_address": "Use analyze_memory(action='regions', address='0x...') for specific address analysis"
+                                }
+                            }
+                        except Exception as e:
+                            return {
+                                "debugging_mode": "kernel",
+                                "error": f"Virtual memory analysis failed: {str(e)}",
+                                "available_commands": [
+                                    "!vm - Virtual memory summary",
+                                    "!pool - Pool memory analysis", 
+                                    "!pfn - Physical frame number database",
+                                    "!pte <address> - Page table entry for specific address"
+                                ],
+                                "suggestion": "Kernel mode memory analysis requires specific addresses or use kernel memory commands directly"
+                            }
                 else:
-                    result = send_command("!address -summary", timeout_ms=20000)
-                return result
+                    # User mode: Use !address command (original behavior)
+                    if address:
+                        try:
+                            result = send_command(f"!address {address}", timeout_ms=20000)
+                            return {
+                                "debugging_mode": "user",
+                                "address_analysis": result
+                            }
+                        except Exception as e:
+                            return {
+                                "debugging_mode": "user",
+                                "error": f"Address analysis failed: {str(e)}",
+                                "suggestion": "Ensure you're attached to a user-mode process and the address is valid"
+                            }
+                    else:
+                        try:
+                            result = send_command("!address -summary", timeout_ms=20000)
+                            return {
+                                "debugging_mode": "user",
+                                "memory_regions_summary": result
+                            }
+                        except Exception as e:
+                            return {
+                                "debugging_mode": "user",
+                                "error": f"Memory regions summary failed: {str(e)}",
+                                "suggestions": [
+                                    "Ensure you're attached to a user-mode process",
+                                    "Try '!vadump' for virtual address dump",
+                                    "Use 'analyze_memory(action=\"regions\", address=\"0x...\")' for specific address analysis"
+                                ]
+                            }
             
             else:
                 return {"error": f"Unknown action: {action}. Use 'display', 'type', 'search', 'pte', or 'regions'"}

@@ -16,7 +16,7 @@ from core.async_ops import (
     submit_async_command, get_async_result, execute_parallel_commands,
     get_async_stats, async_manager, batch_executor, TaskPriority, TaskStatus
 )
-from core.connection_resilience import execute_resilient_command
+from core.communication import send_command
 
 from .tool_utilities import (
     categorize_command_timeout, get_performance_recommendations, 
@@ -158,19 +158,23 @@ def register_performance_tools(mcp: FastMCP):
                         "data_size": metadata.get("original_size", 0)
                     }
                     
-                    # Resilient execution (for comparison)
+                    # Direct execution (for comparison)
                     start_time = time.time()
-                    success, result, metadata = execute_resilient_command(test_cmd, categorize_command_timeout(test_cmd))
-                    resilient_time = time.time() - start_time
+                    try:
+                        result = send_command(test_cmd, timeout_ms=10000)
+                        direct_success = True
+                    except Exception:
+                        direct_success = False
+                    direct_time = time.time() - start_time
                     
-                    results["resilient_only"] = {
-                        "success": success,
-                        "execution_time": resilient_time,
-                        "retries": metadata.get("retries_attempted", 0)
+                    results["direct_only"] = {
+                        "success": direct_success,
+                        "execution_time": direct_time,
+                        "retries": 0
                     }
                     
-                    results["performance_gain"] = max(0, resilient_time - optimized_time)
-                    results["gain_percentage"] = (results["performance_gain"] / max(resilient_time, 0.001)) * 100
+                    results["performance_gain"] = max(0, direct_time - optimized_time)
+                    results["gain_percentage"] = (results["performance_gain"] / max(direct_time, 0.001)) * 100
                     
                     benchmark_results[test_cmd] = results
                 

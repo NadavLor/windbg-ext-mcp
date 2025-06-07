@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from .session_tools import register_session_tools
 from .execution_tools import register_execution_tools
 from .analysis_tools import register_analysis_tools
+from .callback_tools import register_callback_tools
 from .performance_tools import register_performance_tools
 from .support_tools import register_support_tools
 
@@ -44,6 +45,10 @@ def register_all_tools(mcp: FastMCP) -> None:
         logger.debug("Registering analysis tools...")
         register_analysis_tools(mcp)
         
+        # Register callback tools
+        logger.debug("Registering callback tools...")
+        register_callback_tools(mcp)
+        
         # Register performance tools
         logger.debug("Registering performance tools...")
         register_performance_tools(mcp)
@@ -65,19 +70,23 @@ TOOL_CATEGORIES = {
         "description": "Tools for managing debugging sessions, connections, and session recovery"
     },
     "command_execution": {
-        "tools": ["run_command", "run_sequence"],
+        "tools": ["run_command", "run_sequence", "breakpoint_and_continue"],
         "description": "Tools for executing WinDbg commands with enhanced validation and error handling"
     },
     "analysis": {
         "tools": ["analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel"],
         "description": "Tools for analyzing debugging targets and system state"
     },
+    "callbacks": {
+        "tools": ["mcp_list_callbacks"],
+        "description": "Tools for enumerating kernel callbacks and detecting third-party drivers"
+    },
     "performance": {
         "tools": ["performance_manager", "async_manager"],
         "description": "Tools for performance optimization and asynchronous command execution"
     },
     "support": {
-        "tools": ["troubleshoot", "get_help"],
+        "tools": ["troubleshoot", "get_help", "test_windbg_communication", "network_debugging_troubleshoot"],
         "description": "Tools for troubleshooting issues and getting help"
     }
 }

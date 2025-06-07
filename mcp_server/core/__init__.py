@@ -57,20 +57,7 @@ from .hints import (
     ToolInfo
 )
 
-# Phase 2B: Connection Resilience and Session Recovery
-from .connection_resilience import (
-    execute_resilient_command,
-    get_connection_health,
-    set_network_debugging_mode,
-    start_connection_monitoring,
-    stop_connection_monitoring,
-    connection_resilience,
-    ConnectionResilience,
-    ConnectionState,
-    VMState,
-    ConnectionMetrics,
-    RetryConfig
-)
+# Phase 2B: Session Recovery (Connection resilience moved to communication module)
 
 from .session_recovery import (
     capture_current_session,
@@ -166,18 +153,7 @@ __all__ = [
     "ActionInfo",
     "ToolInfo",
     
-    # Connection resilience (Phase 2B)
-    "execute_resilient_command",
-    "get_connection_health", 
-    "set_network_debugging_mode",
-    "start_connection_monitoring",
-    "stop_connection_monitoring",
-    "connection_resilience",
-    "ConnectionResilience",
-    "ConnectionState",
-    "VMState",
-    "ConnectionMetrics",
-    "RetryConfig",
+    # Connection resilience moved to communication module
     
     # Session recovery (Phase 2B)
     "capture_current_session",

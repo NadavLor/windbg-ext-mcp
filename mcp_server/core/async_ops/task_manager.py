@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, Future
 
-from ..performance import execute_optimized_command
+from core.performance import execute_optimized_command
 
 logger = logging.getLogger(__name__)
 

@@ -163,6 +163,11 @@
     <ClInclude Include="src\pch.h" />
     <ClInclude Include="include\json.hpp" />
     <ClInclude Include="src\command\command_handlers.h" />
+    <ClInclude Include="src\command\command_registry.h" />
+    <ClInclude Include="src\command\command_utilities.h" />
+    <ClInclude Include="src\command\basic_command_handlers.h" />
+    <ClInclude Include="src\command\diagnostic_command_handlers.h" />
+    <ClInclude Include="src\command\enhanced_command_handlers.h" />
     <ClInclude Include="src\ipc\mcp_server.h" />
     <ClInclude Include="src\utils\output_callbacks.h" />
     <ClInclude Include="src\utils\constants.h" />
@@ -182,6 +187,11 @@
     <ClCompile Include="src\utils\types.cpp" />
     <ClCompile Include="src\ipc\mcp_server.cpp" />
     <ClCompile Include="src\command\command_handlers.cpp" />
+    <ClCompile Include="src\command\command_registry.cpp" />
+    <ClCompile Include="src\command\command_utilities.cpp" />
+    <ClCompile Include="src\command\basic_command_handlers.cpp" />
+    <ClCompile Include="src\command\diagnostic_command_handlers.cpp" />
+    <ClCompile Include="src\command\enhanced_command_handlers.cpp" />
     <ClCompile Include="src\utils\output_callbacks.cpp" />
   </ItemGroup>
   <ItemGroup>

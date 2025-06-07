@@ -15,8 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .compression import DataCompressor
 from .streaming import StreamingHandler
 from .command_optimizer import CommandOptimizer
-from ..connection_resilience import execute_resilient_command
-from ..unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
+from core.communication import send_command
+from core.unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +98,25 @@ class PerformanceOptimizer:
         with self._lock:
             self.metrics.cache_miss += 1
         
-        # Execute with resilience
-        success, result, metadata = execute_resilient_command(command, timeout_category)
+        # Execute command
+        try:
+            # Map timeout categories to milliseconds
+            timeout_map = {
+                "quick": 5000,
+                "normal": 15000,
+                "slow": 30000,
+                "bulk": 60000,
+                "analysis": 120000
+            }
+            timeout_ms = timeout_map.get(timeout_category, 15000)
+            
+            result = send_command(command, timeout_ms=timeout_ms)
+            success = True
+            metadata = {"cached": False}
+        except Exception as e:
+            success = False
+            result = str(e)
+            metadata = {"error": True}
         
         if success:
             # Measure network transfer size
@@ -155,12 +172,30 @@ class PerformanceOptimizer:
         """Stream large command output with optimization."""
         if self.optimization_level == OptimizationLevel.NONE:
             # Fallback to regular execution
-            success, result, metadata = execute_resilient_command(command, timeout_category)
-            yield {
-                "type": "complete",
-                "data": result,
-                "metadata": metadata
-            }
+            try:
+                # Map timeout categories to milliseconds
+                timeout_map = {
+                    "quick": 5000,
+                    "normal": 15000,
+                    "slow": 30000,
+                    "bulk": 60000,
+                    "analysis": 120000
+                }
+                timeout_ms = timeout_map.get(timeout_category, 60000)
+                
+                result = send_command(command, timeout_ms=timeout_ms)
+                metadata = {"cached": False, "optimization": "none"}
+                yield {
+                    "type": "complete",
+                    "data": result,
+                    "metadata": metadata
+                }
+            except Exception as e:
+                yield {
+                    "type": "error",
+                    "message": str(e),
+                    "metadata": {"error": True}
+                }
         else:
             yield from self.streaming.stream_large_output(command, timeout_category)
     

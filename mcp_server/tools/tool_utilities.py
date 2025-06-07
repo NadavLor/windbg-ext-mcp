@@ -7,7 +7,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from core.communication import send_command
 from core.performance import execute_optimized_command
-from core.connection_resilience import execute_resilient_command
 from core.performance import OptimizationLevel
 
 logger = logging.getLogger(__name__)
@@ -63,13 +62,13 @@ def detect_kernel_mode() -> bool:
         True if kernel mode, False if user mode
     """
     try:
-        success, result, _ = execute_resilient_command(".effmach", "quick")
-        if success and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+        result = send_command(".effmach", timeout_ms=5000)
+        if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
             return True
         
         # Try alternative detection
-        success, result, _ = execute_resilient_command("!pcr", "quick")
-        if success and not result.startswith("Error:") and "is not a recognized" not in result:
+        result = send_command("!pcr", timeout_ms=5000)
+        if result and not result.startswith("Error:") and "is not a recognized" not in result:
             return True
         
         return False

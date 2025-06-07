@@ -1,352 +1,138 @@
 #!/usr/bin/env python
 """
-Simplified WinDbg MCP Server implementation - Hybrid Architecture Edition.
+WinDbg MCP Server - Production Edition.
 
-This is a streamlined version of the MCP server that focuses on core debugging
-functionality with reduced complexity and better organization. Enhanced with
-connection resilience, session recovery, and performance optimization for 
-kernel debugging scenarios.
-
-HYBRID ARCHITECTURE:
-- FastMCP with stdio transport for Cursor ↔ Python MCP Server communication
-- Named pipe client for Python MCP Server ↔ WinDbg Extension communication
-- Enhanced error handling and network debugging resilience
+This is the main entry point for the MCP server that provides AI-assisted
+Windows kernel debugging through natural language interactions.
 """
 import sys
-import os
 import logging
-import time
 from typing import Any, Dict, List, Optional, Union
 
 from fastmcp import FastMCP
-from config import LOG_FORMAT, load_environment_config, OptimizationLevel, DebuggingMode
+from config import LOG_FORMAT, load_environment_config, LOG_LEVEL, DEBUG_ENABLED
 from tools import register_all_tools, get_tool_info
-from core.communication import (
-    test_connection, test_target_connection, send_command,
-    start_connection_monitoring, stop_connection_monitoring,
-    set_debugging_mode, get_connection_health, diagnose_connection_issues,
-    NetworkDebuggingError
-)
-from core.unified_cache import (
-    get_startup_cached_result, cache_startup_command,
-    start_startup_cache, stop_startup_cache, get_cache_stats
-)
-from core.session_recovery import capture_current_session, save_current_session
-from core.performance import (
-    set_optimization_level, get_performance_report, 
-    performance_optimizer
-)
-from core.async_ops import (
-    start_async_monitoring, stop_async_monitoring,
-    get_async_stats, async_manager
-)
+from core.server_initialization import ServerInitializer, InitializationConfig
 
-# Configure logging with centralized config
+
+# Configure logging
 load_environment_config()
-from config import LOG_LEVEL, DEBUG_ENABLED
 
-# CRITICAL: Use stderr for logging to avoid interfering with MCP JSON protocol on stdout
+# Create different handlers for different log levels
+class SplitLevelHandler:
+    """Split logging by level to avoid INFO messages showing as errors in MCP client."""
+    
+    def __init__(self):
+        # Handler for actual errors (goes to stderr - will show as [error] in client)
+        self.error_handler = logging.StreamHandler(sys.stderr)
+        self.error_handler.setLevel(logging.ERROR)
+        self.error_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        
+        # Handler for info/debug (goes to stderr but with different format to distinguish)
+        self.info_handler = logging.StreamHandler(sys.stderr)
+        self.info_handler.setLevel(logging.INFO)
+        self.info_handler.setFormatter(logging.Formatter('📋 %(message)s'))
+        
+        # Filter to only show INFO/DEBUG (not ERROR+)
+        class InfoOnlyFilter(logging.Filter):
+            def filter(self, record):
+                return record.levelno < logging.ERROR
+        
+        self.info_handler.addFilter(InfoOnlyFilter())
+
+# Configure split-level logging
+split_handler = SplitLevelHandler()
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
-    format=LOG_FORMAT,
-    handlers=[logging.StreamHandler(sys.stderr)]
+    handlers=[split_handler.error_handler, split_handler.info_handler]
 )
+
 logger = logging.getLogger(__name__)
 
-# Enable debug logging if configured
 if DEBUG_ENABLED:
     logger.setLevel(logging.DEBUG)
     logging.getLogger('fastmcp').setLevel(logging.DEBUG)
 
-# Create the FastMCP server instance
-mcp = FastMCP()
 
-def detect_debugging_mode(target_connected: bool, target_status: str) -> str:
-    """
-    Detect the current debugging mode with enhanced network debugging detection.
+class WinDbgMCPServer:
+    """Main WinDbg MCP Server class."""
     
-    Args:
-        target_connected: Whether target connection was successful
-        target_status: Target connection status message
-        
-    Returns:
-        "kernel", "user", or "unknown"
-    """
-    try:
-        # Use already-tested target connection results
-        if not target_connected:
-            logger.warning(f"Target not connected: {target_status}")
-            return "unknown"
-        
-        # Detect kernel mode from target status
-        if "kernel" in target_status.lower():
-            return "kernel"
-        elif "user" in target_status.lower():
-            return "user"
-        
-        # Try kernel-mode detection commands - check cache first
-        try:
-            cached_result = get_startup_cached_result(".effmach")
-            if cached_result is not None:
-                logger.debug("Using cached .effmach result for mode detection")
-                result = cached_result
-            else:
-                result = send_command(".effmach", timeout_ms=5000)
-                cache_startup_command(".effmach", result)
-                
-            if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
-                return "kernel"
-        except NetworkDebuggingError as e:
-            logger.warning(f"Network debugging issue during mode detection: {e}")
-            return "kernel"  # Assume kernel mode for network debugging
-        except:
-            pass
-        
-        # Try alternative kernel mode detection - check cache first
-        try:
-            cached_result = get_startup_cached_result("!pcr")
-            if cached_result is not None:
-                logger.debug("Using cached !pcr result for mode detection")
-                result = cached_result
-            else:
-                result = send_command("!pcr", timeout_ms=5000)
-                cache_startup_command("!pcr", result)
-                
-            if result and not result.startswith("Error:") and "is not a recognized" not in result:
-                return "kernel"
-        except NetworkDebuggingError as e:
-            logger.warning(f"Network debugging issue during PCR check: {e}")
-            return "kernel"  # Assume kernel mode for network debugging
-        except:
-            pass
-        
-        # Default to user mode if kernel detection fails
-        return "user"
-        
-    except Exception as e:
-        logger.error(f"Error detecting debugging mode: {e}")
-        return "unknown"
-
-def setup_resilience_features(debugging_mode: str, connected: bool, target_connected: bool, target_status: str):
-    """
-    Set up connection resilience features based on debugging mode with hybrid architecture.
+    def __init__(self):
+        self.mcp = FastMCP()
+        self.initializer = ServerInitializer(InitializationConfig())
+        self._initialized = False
     
-    Args:
-        debugging_mode: The detected debugging mode
-        connected: Whether extension connection was successful
-        target_connected: Whether target connection was successful  
-        target_status: Target connection status message
-    """
-    try:
-        # Set appropriate network mode for the new communication manager
-        if debugging_mode == "kernel":
-            # Assume VM network debugging for kernel mode
-            set_debugging_mode(DebuggingMode.VM_NETWORK)
-            logger.info("Set debugging mode to 'vm_network' for kernel debugging")
-        else:
-            # Use standard network settings for user mode
-            set_debugging_mode(DebuggingMode.LOCAL)
-            logger.info("Set debugging mode to 'local' for user-mode debugging")
-        
-        # Skip automatic health monitoring to prevent WinDbg crashes during connection tests
-        # Health monitoring can be started manually if needed
-        # start_connection_monitoring()
-        logger.info("Connection monitoring available but not auto-started to prevent WinDbg crashes")
-        
-        # Log connection status (already tested, no need to re-test)
-        logger.info("Connection status summary:")
-        logger.info(f"  - Extension available: {connected}")
-        logger.info(f"  - Target connected: {target_connected}")
-        logger.info(f"  - Target status: {target_status}")
-        logger.info(f"  - Network debugging: {'network' in target_status.lower()}")
-        
-        # Capture initial session state if connected (reuse existing connection test result)
-        if connected:
-            # DISABLED: Session capture sends 9+ commands during startup causing spam
-            # This can be enabled later via tools if needed
+    def start(self):
+        """Start the WinDbg MCP Server."""
+        try:
+            # Log startup banner
+            self._log_startup_banner()
             
-            # try:
-            #     session_snapshot = capture_current_session("startup_session")
-            #     if session_snapshot:
-            #         saved = save_current_session()
-            #         logger.info(f"Captured initial session state: {session_snapshot.session_id} (saved: {saved})")
-            #     else:
-            #         logger.warning("Failed to capture initial session state")
-            # except NetworkDebuggingError as e:
-            #     logger.warning(f"Network debugging issue during session capture: {e}")
-            # except Exception as e:
-            #     logger.warning(f"Could not capture initial session state: {e}")
-            pass
-        
-    except Exception as e:
-        logger.warning(f"Failed to setup resilience features: {e}")
-
-def setup_performance_optimization(debugging_mode: str):
-    """
-    Set up performance optimization features for network debugging.
-    
-    Args:
-        debugging_mode: The detected debugging mode
-    """
-    try:
-        # Set optimization level based on debugging mode
-        if debugging_mode == "kernel":
-            # Aggressive optimization for kernel debugging over network
-            set_optimization_level(OptimizationLevel.AGGRESSIVE)
-            logger.info("Set optimization level to 'aggressive' for kernel debugging")
-        else:
-            # Basic optimization for user mode
-            set_optimization_level(OptimizationLevel.BASIC)
-            logger.info("Set optimization level to 'basic' for user-mode debugging")
-        
-        # Optimize for network debugging scenarios
-        performance_optimizer.optimize_for_network_debugging()
-        logger.info("Applied network debugging optimizations")
-        
-        # Start async operations monitoring
-        start_async_monitoring()
-        logger.info("Started async operations monitoring")
-        
-        # Display initial performance status
-        try:
-            perf_report = get_performance_report()
-            async_stats = get_async_stats()
+            # Run initialization sequence
+            connection_result = self.initializer.initialize()
+            self._initialized = True
             
-            logger.info(f"Performance optimization initialized:")
-            logger.info(f"  - Optimization level: {perf_report['optimization_level']}")
-            logger.info(f"  - Cache size: {perf_report.get('cache_statistics', {}).get('max_size', 'unknown')}")
-            logger.info(f"  - Async workers: {async_stats.get('total_managed_tasks', 0)} task slots")
+            # Register all tools
+            self._register_tools()
+        
+            # Log ready message
+            logger.info("MCP Server ready! Use get_help() to see available tools and examples.")
+            logger.info("")
+            
+            # Run the server
+            self._run_server()
             
         except Exception as e:
-            logger.warning(f"Could not get initial performance metrics: {e}")
+            logger.error(f"Failed to start server: {e}")
+            raise
+    
+    def _log_startup_banner(self):
+        """Log the startup banner with tool information."""
+        tool_info = get_tool_info()
         
-    except Exception as e:
-        logger.warning(f"Failed to setup performance optimization: {e}")
-
-def main():
-    """
-    Main entry point for the WinDbg MCP Server with modular architecture and enhanced features.
-    """
-    logger.info("Starting WinDbg MCP Server (Modular Architecture Edition)")
-    
-    # Enable startup cache to prevent redundant commands during initialization
-    start_startup_cache()
-    logger.debug("Startup cache enabled to prevent redundant commands")
-    
-    # Get tool information from the new modular system
-    tool_info = get_tool_info()
-    
-    # Log startup information to stderr (not stdout to avoid MCP protocol conflicts)
-    logger.info("WinDbg MCP Server - Modular Architecture Edition")
-    logger.info("================================================")
-    logger.info(f"Total tools: {tool_info['total_tools']}")
-    logger.info("Tool categories:")
-    for category, details in tool_info['categories'].items():
-        logger.info(f"  📁 {category}: {len(details['tools'])} tools")
-        for tool in details['tools']:
-            logger.info(f"     • {tool}")
-    logger.info("")
-    
-    # Test initial connection with enhanced diagnostics
-    logger.info("Testing connection to WinDbg extension...")
-    logger.info("=" * 50)
-    
-    connected = False
-    target_connected = False
-    target_status = "Not tested"
-    
-    try:
-        connected = test_connection()
-        if connected:
-            logger.info("✓ Connected to WinDbg extension")
-            
-            # Test target connection
-            target_connected, target_status = test_target_connection()
-            if target_connected:
-                logger.info(f"✓ Target connection: {target_status}")
-            else:
-                logger.info(f"⚠ Target issue: {target_status}")
-        else:
-            logger.info("✗ Not connected to WinDbg extension")
-            logger.info("")
-            logger.info("Diagnosing connection issues...")
-            
-            # Run comprehensive diagnostics only when connection failed
-            diagnostics = diagnose_connection_issues()
-            logger.info(f"Extension available: {diagnostics['extension_available']}")
-            logger.info(f"Target connected: {diagnostics['target_connected']}")
-            
-            if diagnostics.get("recommendations"):
-                logger.info("\nRecommendations:")
-                for rec in diagnostics["recommendations"]:
-                    logger.info(f"  • {rec}")
-                    
-    except NetworkDebuggingError as e:
-        logger.info(f"⚠ Network debugging issue detected: {e}")
-        logger.info("Note: This is common with VM-based kernel debugging")
-        connected = True  # Assume connected for network debugging scenarios
-        target_connected = True
-        target_status = "Network debugging (assumed connected)"
-    except Exception as e:
-        logger.info(f"✗ Connection test failed: {e}")
-        connected = False
-    
-    logger.info("")
-    
-    # Detect debugging mode and set up features
-    if connected:
-        debugging_mode = detect_debugging_mode(target_connected, target_status)
-        logger.info(f"Detected debugging mode: {debugging_mode}")
+        logger.info("WinDbg MCP Server - Production Edition")
+        logger.info("=" * 50)
+        logger.info(f"Total tools: {tool_info['total_tools']}")
+        logger.info("Tool categories:")
         
-        # Setup resilience features - pass existing connection test results
-        setup_resilience_features(debugging_mode, connected, target_connected, target_status)
-        
-        # Setup performance optimization
-        setup_performance_optimization(debugging_mode)
-        
+        for category, details in tool_info['categories'].items():
+            logger.info(f"  📁 {category}: {len(details['tools'])} tools")
+            for tool in details['tools']:
+                logger.info(f"     • {tool}")
         logger.info("")
     
-    # Disable startup cache now that initialization is complete
-    stop_startup_cache()
-    logger.debug("Startup cache disabled - initialization complete")
-    
-    # Register all tools with the modular system
-    logger.info("Registering tools with modular architecture...")
-    try:
-        register_all_tools(mcp)
-        logger.info("Successfully registered all tools")
-    except Exception as e:
-        logger.error(f"Failed to register tools: {e}")
-        raise
-    
-    logger.info("MCP Server ready! Use get_help() to see available tools and examples.")
-    logger.info("")
-    
-    # Run the server
-    try:
-        mcp.run()
-    except KeyboardInterrupt:
-        # FastMCP closes stdio streams, so avoid any print/logging after this
-        # Just exit cleanly without trying to write to closed streams
-        pass
-    except Exception as e:
-        # Only log if streams are still available
+    def _register_tools(self):
+        """Register all tools with the MCP server."""
+        logger.info("Registering tools...")
         try:
-            logger.error(f"Server error: {e}")
-        except:
-            pass
-        raise
-    finally:
-        # Cleanup without any I/O operations to avoid closed stream errors
+            register_all_tools(self.mcp)
+            logger.info("Successfully registered all tools")
+        except Exception as e:
+            logger.error(f"Failed to register tools: {e}")
+            raise
+    
+    def _run_server(self):
+        """Run the FastMCP server."""
         try:
-            stop_connection_monitoring()
-            stop_async_monitoring()
-        except:
+            self.mcp.run()
+        except KeyboardInterrupt:
+            # FastMCP closes stdio streams, so avoid logging after this
             pass
-        
-        # Exit immediately to avoid any further I/O errors
-        import sys
-        sys.exit(0)
+        except Exception as e:
+            # Only log if streams are still available
+            try:
+                logger.error(f"Server error: {e}")
+            except:
+                pass
+            raise
+
+
+def main():
+    """Main entry point for the WinDbg MCP Server."""
+    server = WinDbgMCPServer()
+    server.start()
+
 
 if __name__ == "__main__":
     main() 

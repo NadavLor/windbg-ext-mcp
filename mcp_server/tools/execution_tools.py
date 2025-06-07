@@ -4,15 +4,15 @@ Command execution tools for WinDbg MCP server.
 This module contains tools for executing WinDbg commands and command sequences.
 """
 import logging
+import time
 from typing import Dict, Any, List, Optional, Union
 from fastmcp import FastMCP, Context
 
-from core.communication import send_command
 from core.validation import validate_command, is_safe_for_automation
 from core.context import get_context_manager, save_context, restore_context
 from core.error_handler import enhance_error, error_enhancer, DebugContext, ErrorCategory
 from core.hints import get_parameter_help, validate_tool_parameters
-from core.connection_resilience import execute_resilient_command
+from core.communication import send_command, CommunicationError, TimeoutError, ConnectionError
 from core.performance import execute_optimized_command
 
 from .tool_utilities import (
@@ -109,9 +109,48 @@ def register_execution_tools(mcp: FastMCP):
                     return enhanced_error.to_dict()
                     
             elif resilient:
-                # Use resilient execution without optimization
+                # Use resilient execution with retry logic
                 timeout_category = categorize_command_timeout(command)
-                success, result, metadata = execute_resilient_command(command, timeout_category)
+                timeout_ms = get_direct_timeout(command)
+                
+                # Retry configuration based on timeout category
+                max_retries = 3 if timeout_category in ["quick", "normal"] else 2
+                retry_delay = 1.0  # seconds between retries
+                
+                success = False
+                result = None
+                retries_attempted = 0
+                start_time = time.time()
+                
+                for attempt in range(max_retries + 1):  # +1 for initial attempt
+                    try:
+                        result = send_command(command, timeout_ms)
+                        success = True
+                        break
+                    except (CommunicationError, TimeoutError, ConnectionError) as e:
+                        retries_attempted = attempt
+                        if attempt < max_retries:
+                            logger.warning(f"Command failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            # Final attempt failed
+                            success = False
+                            result = str(e)
+                            break
+                    except Exception as e:
+                        # Non-recoverable error, don't retry
+                        success = False
+                        result = str(e)
+                        retries_attempted = attempt
+                        break
+                
+                response_time = time.time() - start_time
+                metadata = {
+                    "response_time": response_time,
+                    "retries_attempted": retries_attempted,
+                    "timeout_category": timeout_category
+                }
                 
                 if success:
                     return {
@@ -172,20 +211,23 @@ def register_execution_tools(mcp: FastMCP):
         """
         logger.debug(f"Executing command sequence: {len(commands)} commands, stop_on_error: {stop_on_error}")
         
-        # Validate parameters
-        is_valid, validation_errors = validate_tool_parameters("run_sequence", "", {"commands": commands})
-        if not is_valid:
-            enhanced_error = enhance_error("parameter", 
-                                         tool_name="run_sequence", 
-                                         missing_param="commands")
-            return enhanced_error.to_dict()
-        
-        if not commands or not isinstance(commands, list):
+        # Validate parameters - Fixed parameter validation
+        if not commands:
             enhanced_error = enhance_error("parameter", 
                                          tool_name="run_sequence", 
                                          missing_param="commands")
             error_dict = enhanced_error.to_dict()
             error_dict["help"] = get_parameter_help("run_sequence")
+            error_dict["error_details"] = "Parameter 'commands' is required for this operation"
+            return error_dict
+        
+        if not isinstance(commands, list):
+            enhanced_error = enhance_error("parameter", 
+                                         tool_name="run_sequence", 
+                                         missing_param="commands")
+            error_dict = enhanced_error.to_dict()
+            error_dict["help"] = get_parameter_help("run_sequence")
+            error_dict["error_details"] = "Parameter 'commands' must be a list of strings"
             return error_dict
         
         # Update context for better error suggestions
@@ -193,7 +235,7 @@ def register_execution_tools(mcp: FastMCP):
         
         # Save context before sequence execution for potential rollback
         context_manager = get_context_manager()
-        context_saved = save_context(context_manager, f"run_sequence_{len(commands)}_commands")
+        context_saved = save_context(send_command)
         
         results = []
         successful_commands = 0
@@ -389,7 +431,7 @@ def register_execution_tools(mcp: FastMCP):
         
         # Save context before breakpoint operations
         context_manager = get_context_manager()
-        context_saved = save_context(context_manager, f"breakpoint_and_continue_{breakpoint}")
+        context_saved = save_context(send_command)
         
         results = []
         

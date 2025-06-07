@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Dict, Any, Generator
 
-from ..connection_resilience import execute_resilient_command
+from core.communication import send_command
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +28,25 @@ class StreamingHandler:
                 "progress": 0.1
             }
             
-            # Execute the command with resilience
-            success, result, metadata = execute_resilient_command(command, timeout_category)
-            
-            if not success:
+            # Execute the command
+            try:
+                # Map timeout categories to milliseconds
+                timeout_map = {
+                    "quick": 5000,
+                    "normal": 15000, 
+                    "slow": 30000,
+                    "bulk": 60000,
+                    "analysis": 120000
+                }
+                timeout_ms = timeout_map.get(timeout_category, 15000)
+                
+                result = send_command(command, timeout_ms=timeout_ms)
+                metadata = {"cached": False, "streaming": True}
+            except Exception as e:
                 yield {
                     "type": "error", 
-                    "message": result,
-                    "metadata": metadata
+                    "message": str(e),
+                    "metadata": {"error": True}
                 }
                 return
             
