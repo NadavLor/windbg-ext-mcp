@@ -92,25 +92,31 @@ class ServerInitializer:
             # Test extension connection
             extension_connected = test_connection()
             
+            # Always test target connection regardless of extension status
+            # The target connection works independently via direct WinDbg commands
+            target_connected, target_status = test_target_connection()
+            
+            # Log results
             if extension_connected:
                 logger.info("✓ Connected to WinDbg extension")
-                
-                # Test target connection
-                target_connected, target_status = test_target_connection()
-                if target_connected:
-                    logger.info(f"✓ Target connection: {target_status}")
-                else:
-                    logger.info(f"⚠ Target issue: {target_status}")
             else:
                 logger.info("✗ Not connected to WinDbg extension")
                 error_message = "Extension connection failed"
-                
-                # Run diagnostics when connection failed
-                self._run_connection_diagnostics()
+            
+            if target_connected:
+                logger.info(f"✓ Target connection: {target_status}")
+            else:
+                logger.info(f"⚠ Target issue: {target_status}")
+                if not error_message:
+                    error_message = f"Target connection failed: {target_status}"
                 
         except Exception as e:
             logger.info(f"✗ Connection test failed: {e}")
             error_message = str(e)
+        
+        # If either connection failed, run diagnostics for more information
+        if not extension_connected or not target_connected:
+            self._run_connection_diagnostics()
         
         # Detect debugging mode
         debugging_mode = self._detect_debugging_mode(target_connected, target_status)
@@ -126,17 +132,24 @@ class ServerInitializer:
     
     def _run_connection_diagnostics(self):
         """Run connection diagnostics when connection fails."""
-        logger.info("Diagnosing connection issues...")
+        logger.info("\n" + "=" * 50)
+        logger.info("Running detailed connection diagnostics...")
         
         try:
             diagnostics = diagnose_connection_issues()
-            logger.info(f"Extension available: {diagnostics['extension_available']}")
-            logger.info(f"Target connected: {diagnostics['target_connected']}")
+            logger.info(f"📋 Diagnostic Results:")
+            logger.info(f"  - Extension available: {diagnostics['extension_available']}")
+            logger.info(f"  - Target connected: {diagnostics['target_connected']}")
+            
+            if diagnostics.get("target_status"):
+                logger.info(f"  - Target status: {diagnostics['target_status']}")
             
             if diagnostics.get("recommendations"):
-                logger.info("\nRecommendations:")
+                logger.info("\n💡 Recommendations:")
                 for rec in diagnostics["recommendations"]:
                     logger.info(f"  • {rec}")
+            
+            logger.info("=" * 50)
         except Exception as e:
             logger.warning(f"Failed to run diagnostics: {e}")
     
@@ -152,7 +165,7 @@ class ServerInitializer:
             "kernel", "user", or "unknown"
         """
         if not target_connected:
-            logger.warning(f"Target not connected: {target_status}")
+            logger.info(f"Target not connected: {target_status}")
             return "unknown"
         
         # Detect mode from target status

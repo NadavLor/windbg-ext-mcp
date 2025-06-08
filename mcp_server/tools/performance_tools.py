@@ -1,15 +1,17 @@
 """
-Performance and asynchronous execution tools for WinDbg MCP server.
+Performance management and optimization tools for WinDbg MCP server.
 
-This module contains tools for managing performance optimization and async command execution.
+This module provides tools for managing performance optimization settings,
+monitoring performance metrics, and controlling execution optimization.
 """
 import logging
 import time
+import asyncio
 from typing import Dict, Any, List, Optional, Union
 from fastmcp import FastMCP, Context
 
 from core.performance import (
-    execute_optimized_command, stream_large_command, get_performance_report,
+    stream_large_command, get_performance_report,
     set_optimization_level, clear_performance_caches, OptimizationLevel
 )
 from core.async_ops import (
@@ -17,9 +19,8 @@ from core.async_ops import (
     get_async_stats, async_manager, batch_executor, TaskPriority, TaskStatus
 )
 from core.communication import send_command
-
 from .tool_utilities import (
-    categorize_command_timeout, get_performance_recommendations, 
+    get_performance_recommendations, 
     get_optimization_effects, summarize_benchmark, get_benchmark_recommendations,
     get_async_insights
 )
@@ -27,10 +28,10 @@ from .tool_utilities import (
 logger = logging.getLogger(__name__)
 
 def register_performance_tools(mcp: FastMCP):
-    """Register all performance and async tools."""
+    """Register all performance management tools."""
     
     @mcp.tool()
-    async def performance_manager(ctx: Context, action: str, level: str = "", command: str = "") -> Dict[str, Any]:
+    async def performance_manager(ctx: Context, action: str, level: str = "", command: str = "") -> Union[str, Dict[str, Any]]:
         """
         Manage performance optimization settings and monitor performance metrics.
         
@@ -54,136 +55,99 @@ def register_performance_tools(mcp: FastMCP):
                 return {
                     "performance_report": perf_report,
                     "async_statistics": async_stats,
-                    "recommendations": get_performance_recommendations(perf_report, async_stats),
-                    "tip": "Use performance_manager(action='set_level', level='aggressive') to optimize for network debugging"
+                    "recommendations": f"Current optimization level: {perf_report.get('optimization_level', 'unknown')}",
+                    "status": "Performance report generated"
                 }
-            
+                
             elif action == "set_level":
                 if not level:
-                    return {
-                        "error": "Optimization level required",
-                        "available_levels": ["none", "basic", "aggressive", "maximum"],
-                        "current_level": get_performance_report()["optimization_level"]
-                    }
+                    return {"error": "Optimization level required. Use: none, basic, aggressive, maximum"}
                 
                 try:
                     opt_level = OptimizationLevel(level)
-                    old_level = get_performance_report()["optimization_level"]
                     set_optimization_level(opt_level)
-                    
                     return {
-                        "message": f"Optimization level changed from '{old_level}' to '{level}'",
-                        "effects": get_optimization_effects(opt_level),
-                        "tip": "Changes take effect immediately for new commands"
+                        "success": True,
+                        "optimization_level": level,
+                        "effects": {
+                            "none": "No optimization, direct command execution",
+                            "basic": "Basic caching and timeout optimization",
+                            "aggressive": "Advanced caching, parallel execution, smart retries",
+                            "maximum": "Full optimization with prediction and streaming"
+                        }.get(level, "Unknown level"),
+                        "status": f"Optimization level set to {level}"
                     }
                 except ValueError:
-                    return {
-                        "error": f"Invalid optimization level: {level}",
-                        "available_levels": [lvl.value for lvl in OptimizationLevel]
-                    }
-            
+                    return {"error": f"Invalid optimization level: {level}. Use: none, basic, aggressive, maximum"}
+                    
             elif action == "clear_cache":
-                # Clear performance caches
                 clear_performance_caches()
-                
                 return {
-                    "message": "Performance caches cleared",
-                    "effect": "Next commands will execute fresh (no cache hits)",
-                    "tip": "Use this if you need fresh results or after system state changes"
+                    "cache_cleared": True,
+                    "entries_removed": "cleared",
+                    "status": "Performance cache cleared"
                 }
-            
+                
             elif action == "stream":
                 if not command:
-                    return {
-                        "error": "Command required for streaming",
-                        "example": "performance_manager(action='stream', command='!process 0 0')",
-                        "suitable_commands": ["!process 0 0", "!handle 0 f", "lm v", "!analyze -v"]
-                    }
+                    return {"error": "Command required for streaming action"}
                 
-                # Stream large command output
-                stream_results = []
                 try:
+                    # Execute streaming command
+                    stream_results = []
                     for chunk in stream_large_command(command):
                         stream_results.append(chunk)
                         if chunk.get("type") == "complete":
                             break
                     
-                    # Format streaming results
-                    total_chunks = len([r for r in stream_results if r.get("type") == "chunk"])
-                    final_result = next((r for r in stream_results if r.get("type") == "complete"), {})
-                    
                     return {
-                        "streaming_completed": True,
+                        "streaming_result": stream_results,
                         "command": command,
-                        "total_chunks": total_chunks,
-                        "total_size": final_result.get("total_size", 0),
-                        "metadata": final_result.get("metadata", {}),
-                        "stream_data": stream_results,
-                        "tip": "Large results were streamed in chunks to optimize network transfer"
+                        "status": "Streaming execution completed"
                     }
-                    
                 except Exception as e:
-                    return {
-                        "error": f"Streaming failed: {str(e)}",
-                        "suggestion": "Try with a smaller command or use run_command for direct execution"
-                    }
-            
+                    return {"error": f"Streaming execution failed: {str(e)}"}
+                    
             elif action == "benchmark":
-                # Run performance benchmark
-                test_commands = [
-                    "version",  # Quick command
-                    "lm",       # Medium command  
-                    "!process -1 0"  # Slow command
-                ]
+                if not command:
+                    command = "version"  # Default benchmark command
                 
-                if command:
-                    test_commands = [command]
+                # Run benchmark test
+                times = []
+                iterations = 5
                 
-                benchmark_results = {}
-                
-                for test_cmd in test_commands:
-                    # Test with and without optimization
-                    results = {}
-                    
-                    # Optimized execution
-                    start_time = time.time()
-                    success, result, metadata = execute_optimized_command(test_cmd, force_fresh=True)
-                    optimized_time = time.time() - start_time
-                    
-                    results["optimized"] = {
-                        "success": success,
-                        "execution_time": optimized_time,
-                        "cached": metadata.get("cached", False),
-                        "compressed": metadata.get("compressed", False),
-                        "data_size": metadata.get("original_size", 0)
-                    }
-                    
-                    # Direct execution (for comparison)
+                for i in range(iterations):
                     start_time = time.time()
                     try:
-                        result = send_command(test_cmd, timeout_ms=10000)
-                        direct_success = True
-                    except Exception:
-                        direct_success = False
-                    direct_time = time.time() - start_time
-                    
-                    results["direct_only"] = {
-                        "success": direct_success,
-                        "execution_time": direct_time,
-                        "retries": 0
-                    }
-                    
-                    results["performance_gain"] = max(0, direct_time - optimized_time)
-                    results["gain_percentage"] = (results["performance_gain"] / max(direct_time, 0.001)) * 100
-                    
-                    benchmark_results[test_cmd] = results
+                        from core.execution.timeout_resolver import resolve_timeout
+                        from config import DebuggingMode
+                        timeout_ms = resolve_timeout(command, DebuggingMode.VM_NETWORK)
+                        result = send_command(command, timeout_ms=timeout_ms)
+                        end_time = time.time()
+                        if result:  # Only count successful executions
+                            times.append((end_time - start_time) * 1000)  # Convert to ms
+                    except Exception as e:
+                        logger.warning(f"Benchmark iteration {i+1} failed: {e}")
                 
-                return {
-                    "benchmark_results": benchmark_results,
-                    "summary": summarize_benchmark(benchmark_results),
-                    "recommendations": get_benchmark_recommendations(benchmark_results)
-                }
-            
+                if times:
+                    avg_time = sum(times) / len(times)
+                    min_time = min(times)
+                    max_time = max(times)
+                    
+                    return {
+                        "benchmark_results": {
+                            "command": command,
+                            "iterations": len(times),
+                            "average_time_ms": f"{avg_time:.2f}",
+                            "min_time_ms": f"{min_time:.2f}",
+                            "max_time_ms": f"{max_time:.2f}",
+                            "success_rate": f"{len(times)/iterations*100:.1f}%"
+                        },
+                        "status": "Benchmark completed"
+                    }
+                else:
+                    return {"error": "Benchmark failed - no successful command executions"}
+                    
             else:
                 return {
                     "error": f"Unknown action: {action}",
@@ -191,18 +155,18 @@ def register_performance_tools(mcp: FastMCP):
                     "examples": [
                         "performance_manager(action='report')",
                         "performance_manager(action='set_level', level='aggressive')",
-                        "performance_manager(action='stream', command='!process 0 0')"
+                        "performance_manager(action='benchmark', command='version')"
                     ]
                 }
                 
         except Exception as e:
-            logger.error(f"Error in performance_manager: {e}")
+            logger.error(f"Performance manager error: {e}")
             return {"error": str(e)}
 
     @mcp.tool()
     async def async_manager(ctx: Context, action: str, commands: List[str] = None, task_id: str = "", priority: str = "normal") -> Dict[str, Any]:
         """
-        Manage asynchronous command execution for improved performance and concurrency.
+        Manage asynchronous command execution for performance and concurrency.
         
         Args:
             ctx: The MCP context

@@ -43,9 +43,6 @@ The project uses a hybrid architecture optimized for network kernel debugging:
 - **Memory Analysis**: Memory inspection, structure analysis, and search capabilities
 - **Kernel Analysis**: Kernel objects, IDT, handles, and system structures
 
-### 🔍 Extended Debugging Tools
-- **Unified Callback Enumeration**: Single command that gathers all core callback lists (process, thread, image, registry, object manager) and outputs a consolidated report with automatic address-to-module resolution
-
 ### 🚀 Performance & Reliability
 - **Network Optimization**: Designed for VM based kernel debugging over network
 - **Connection Resilience**: Automatic retry logic with exponential backoff

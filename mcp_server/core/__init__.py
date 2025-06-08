@@ -2,16 +2,20 @@
 Core functionality for WinDbg MCP Extension.
 
 This module provides the core components for communication, validation,
-context management, enhanced error handling, parameter hints, connection
+context management, error handling, parameter hints, connection
 resilience, session recovery, performance optimization, and async operations.
 """
 
 from .communication import (
     send_command,
+    send_handler_command,
     test_connection,
+    test_target_connection,
+    diagnose_connection_issues,
     CommunicationError,
     TimeoutError,
-    ConnectionError
+    ConnectionError,
+    NetworkDebuggingError
 )
 
 from .unified_cache import (
@@ -57,8 +61,6 @@ from .hints import (
     ToolInfo
 )
 
-# Phase 2B: Session Recovery (Connection resilience moved to communication module)
-
 from .session_recovery import (
     capture_current_session,
     check_session_health,
@@ -74,9 +76,7 @@ from .session_recovery import (
     RecoveryContext
 )
 
-# Phase 2C: Performance Optimization and Async Operations
 from .performance import (
-    execute_optimized_command,
     stream_large_command,
     get_performance_report,
     set_optimization_level,
@@ -110,10 +110,14 @@ from .async_ops import (
 __all__ = [
     # Communication
     "send_command",
-    "test_connection", 
+    "send_handler_command",
+    "test_connection",
+    "test_target_connection", 
+    "diagnose_connection_issues",
     "CommunicationError",
     "TimeoutError",
     "ConnectionError",
+    "NetworkDebuggingError",
     
     # Unified Cache
     "start_startup_cache",
@@ -136,7 +140,7 @@ __all__ = [
     "restore_context",
     "ContextManager",
     
-    # Enhanced error handling
+    # Error handling
     "enhance_error",
     "error_enhancer",
     "EnhancedError",
@@ -153,9 +157,7 @@ __all__ = [
     "ActionInfo",
     "ToolInfo",
     
-    # Connection resilience moved to communication module
-    
-    # Session recovery (Phase 2B)
+    # Session recovery
     "capture_current_session",
     "check_session_health",
     "recover_session",
@@ -169,8 +171,7 @@ __all__ = [
     "SessionSnapshot",
     "RecoveryContext",
     
-    # Performance optimization (Phase 2C)
-    "execute_optimized_command",
+    # Performance optimization
     "stream_large_command", 
     "get_performance_report",
     "set_optimization_level",
@@ -184,7 +185,7 @@ __all__ = [
     "PerformanceMetrics",
     "DataSize",
     
-    # Async operations (Phase 2C)
+    # Async operations
     "submit_async_command",
     "get_async_result",
     "execute_parallel_commands",

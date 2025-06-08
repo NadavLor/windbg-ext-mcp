@@ -45,7 +45,7 @@
 - **Categorized:** Tools organized into logical groups:
   - **Session Management (5 tools):** `debug_session`, `connection_manager`, `session_manager`, etc.
   - **Command Execution (3 tools):** `run_command`, `run_sequence`, `breakpoint_and_continue`
-  - **Analysis (5 tools):** `analyze_process`, `analyze_thread`, `analyze_memory`, `analyze_kernel`, `mcp_list_callbacks`
+  - **Analysis (4 tools):** `analyze_process`, `analyze_thread`, `analyze_memory`, `analyze_kernel`
   - **Performance (2 tools):** `performance_manager`, `async_manager`
   - **Support (8 tools):** `troubleshoot`, `get_help`, diagnostic tools, etc.
   - **C++ Extension (12 handlers):** Low-level performance operations
@@ -54,7 +54,7 @@
 - ✅ **No duplications found** in Python MCP tools
 - ✅ **All tools properly registered** in `mcp_server/tools/__init__.py`
 - ✅ **C++ extension handlers** complement Python tools without conflicts
-- ✅ **Unified callback enumeration** (`mcp_list_callbacks`) working in both Python and C++
+
 
 ### 🚀 **Enhanced Features Documented**
 
@@ -66,7 +66,7 @@
 - **Combined Operations:** `breakpoint_and_continue` for one-step debugging
 
 #### **Security Research Tools**
-- **EDR Detection:** `mcp_list_callbacks` automatically identifies third-party drivers
+
 - **Comprehensive Coverage:** All callback types (process, thread, image, registry, object manager)
 - **Performance Optimized:** Filtering reduces execution time from 2.17s to 0.124s
 
@@ -122,7 +122,7 @@
 ### **Recommended Actions**
 1. **Test the fixes:** Rebuild the C++ extension to verify duplicate handler resolution
 2. **Review documentation:** Use the new `docs/mcp-tools-reference.md` as the primary tool reference
-3. **Update workflows:** Leverage the new `mcp_list_callbacks` tool for EDR detection
+3. **Update workflows:** Use enhanced kernel analysis tools for security research
 4. **Optimize performance:** Use the documented best practices for VM debugging
 
 ### **Future Enhancements**

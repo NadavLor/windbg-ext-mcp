@@ -30,15 +30,20 @@ class StreamingHandler:
             
             # Execute the command
             try:
-                # Map timeout categories to milliseconds
-                timeout_map = {
-                    "quick": 5000,
-                    "normal": 15000, 
-                    "slow": 30000,
-                    "bulk": 60000,
-                    "analysis": 120000
+                # Use centralized timeout resolution (fixes hardcoded timeout bug)
+                from core.execution.timeout_resolver import resolve_timeout
+                from config import DebuggingMode
+                
+                # Create a representative command for the timeout category
+                category_commands = {
+                    "quick": "version",
+                    "normal": "k",
+                    "slow": "!analyze", 
+                    "bulk": "lm",
+                    "analysis": "!analyze -v"
                 }
-                timeout_ms = timeout_map.get(timeout_category, 15000)
+                representative_command = category_commands.get(timeout_category, "k")
+                timeout_ms = resolve_timeout(representative_command, DebuggingMode.VM_NETWORK)
                 
                 result = send_command(command, timeout_ms=timeout_ms)
                 metadata = {"cached": False, "streaming": True}

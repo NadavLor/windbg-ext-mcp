@@ -12,11 +12,13 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 from .communication import send_command, test_connection, CommunicationError, TimeoutError, ConnectionError
 from .unified_cache import (
     cache_session_snapshot, get_cached_session_snapshot, clear_session_cache
 )
+from config import get_timeout_for_command, DebuggingMode
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ class RecoveryStrategy(Enum):
 @dataclass
 class SessionSnapshot:
     """Snapshot of debugging session state."""
-    timestamp: str
+    timestamp: float
     session_id: str
     debugging_mode: str  # kernel/user
     target_info: Dict[str, Any]
@@ -70,8 +72,10 @@ class RecoveryContext:
 class SessionRecovery:
     """Main class for session recovery and state management."""
     
-    def __init__(self, state_file: str = "windbg_session_state.json"):
+    def __init__(self, state_file: str = "windbg_session_state.json", snapshot_dir: Path = None):
         self.state_file = state_file
+        self.snapshot_dir = snapshot_dir or Path("session_snapshots")
+        self.snapshot_dir.mkdir(exist_ok=True)
         self.current_session: Optional[SessionSnapshot] = None
         self.session_state = SessionState.UNKNOWN
         self.recovery_context: Optional[RecoveryContext] = None
@@ -111,7 +115,7 @@ class SessionRecovery:
                 session_id = f"session_{int(time.time())}"
             
             snapshot = SessionSnapshot(
-                timestamp=datetime.now().isoformat(),
+                timestamp=time.time(),
                 session_id=session_id,
                 debugging_mode="unknown",
                 target_info={}
@@ -121,7 +125,7 @@ class SessionRecovery:
             
             # Detect debugging mode
             try:
-                result = send_command(".effmach", timeout_ms=5000)
+                result = send_command(".effmach", timeout_ms=get_timeout_for_command(".effmach"))
                 if any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
                     snapshot.debugging_mode = "kernel"
                 else:
@@ -135,7 +139,7 @@ class SessionRecovery:
             
             # Get target information
             try:
-                version_info = send_command("version", timeout_ms=5000)
+                version_info = send_command("version", timeout_ms=get_timeout_for_command("version"))
                 snapshot.target_info["version"] = version_info
             except (CommunicationError, TimeoutError, ConnectionError) as e:
                 logger.warning(f"Failed to get target version information: {e}")
@@ -147,7 +151,7 @@ class SessionRecovery:
             # Get current process context (if in kernel mode)
             if snapshot.debugging_mode == "kernel":
                 try:
-                    proc_info = send_command("!process -1 0", timeout_ms=15000)
+                    proc_info = send_command("!process -1 0", timeout_ms=get_timeout_for_command("!process -1 0"))
                     if "PROCESS" in proc_info:
                         # Extract current process address
                         import re
@@ -164,7 +168,7 @@ class SessionRecovery:
             # Get current thread context (kernel mode compatible)
             try:
                 # In kernel mode, use !thread to get current thread info instead of ~.
-                thread_info = send_command("!thread", timeout_ms=5000)
+                thread_info = send_command("!thread", timeout_ms=get_timeout_for_command("!thread"))
                 import re
                 # Look for THREAD pattern in kernel mode output
                 match = re.search(r'THREAD\s+([0-9a-f]+)', thread_info)
@@ -172,7 +176,7 @@ class SessionRecovery:
                     snapshot.current_thread = match.group(1)
                 else:
                     # Fallback: try to get current processor info
-                    proc_info = send_command("!pcr", timeout_ms=5000)
+                    proc_info = send_command("!pcr", timeout_ms=get_timeout_for_command("!pcr"))
                     snapshot.current_thread = "current_processor"
             except (CommunicationError, TimeoutError, ConnectionError) as e:
                 logger.warning(f"Failed to get current thread context: {e}")
@@ -183,8 +187,8 @@ class SessionRecovery:
             
             # Get call stack (limited)
             try:
-                stack_info = send_command("k 5", timeout_ms=15000)
-                snapshot.call_stack = stack_info
+                stack_info = send_command("k 5", timeout_ms=get_timeout_for_command("k 5"))
+                snapshot.call_stack = stack_info[:200] + "..." if len(stack_info) > 200 else stack_info
             except (CommunicationError, TimeoutError, ConnectionError) as e:
                 logger.warning(f"Failed to get call stack: {e}")
                 pass
@@ -194,7 +198,7 @@ class SessionRecovery:
             
             # Get key registers
             try:
-                reg_info = send_command("r", timeout_ms=5000)
+                reg_info = send_command("r", timeout_ms=get_timeout_for_command("r"))
                 snapshot.registers = {"summary": reg_info}
             except (CommunicationError, TimeoutError, ConnectionError) as e:
                 logger.warning(f"Failed to get registers: {e}")
@@ -205,7 +209,7 @@ class SessionRecovery:
             
             # Get loaded modules (limited)
             try:
-                modules_info = send_command("lm", timeout_ms=15000)
+                modules_info = send_command("lm", timeout_ms=get_timeout_for_command("lm"))
                 # Parse module information (simplified)
                 module_lines = modules_info.split('\n')[:10]  # Limit to first 10 modules
                 snapshot.modules = [{"info": line.strip()} for line in module_lines if line.strip()]
@@ -218,7 +222,7 @@ class SessionRecovery:
             
             # Get breakpoints
             try:
-                bp_info = send_command("bl", timeout_ms=5000)
+                bp_info = send_command("bl", timeout_ms=get_timeout_for_command("bl"))
                 if bp_info.strip():
                     # Parse breakpoint information
                     bp_lines = bp_info.split('\n')
@@ -262,7 +266,7 @@ class SessionRecovery:
             
             # Test WinDbg responsiveness with kernel-compatible command
             try:
-                result = send_command("version", timeout_ms=5000)
+                result = send_command("version", timeout_ms=get_timeout_for_command("version"))
             except Exception as e:
                 # Clear cache since WinDbg is unresponsive
                 clear_session_cache()
@@ -272,7 +276,7 @@ class SessionRecovery:
             if self.current_session and self.current_session.debugging_mode == "kernel":
                 try:
                     # Use non-destructive command to check target connectivity
-                    result = send_command("!uptime", timeout_ms=5000)
+                    result = send_command("!uptime", timeout_ms=get_timeout_for_command("!uptime"))
                     if "uptime:" in result.lower() or "system up time" in result.lower():
                         # Target is responsive and connected
                         pass
@@ -282,7 +286,7 @@ class SessionRecovery:
                         return True, "Target VM disconnected"
                     else:
                         # Try alternative check with register dump
-                        result = send_command("r rip", timeout_ms=3000)
+                        result = send_command("r rip", timeout_ms=get_timeout_for_command("r rip"))
                         if "bad register" in result.lower() or "target not connected" in result.lower():
                             clear_session_cache()
                             return True, "Target VM disconnected"
@@ -338,7 +342,7 @@ class SessionRecovery:
             
             # Step 2: Verify WinDbg is responsive
             try:
-                result = send_command("version", timeout_ms=5000)
+                result = send_command("version", timeout_ms=get_timeout_for_command("version"))
             except Exception as e:
                 recovery_info["steps_completed"].append("windbg_unresponsive")
                 return False, f"WinDbg not responding: {str(e)}", recovery_info
@@ -366,7 +370,7 @@ class SessionRecovery:
                 
                 try:
                     result = send_command(
-                        f".process /i {self.current_session.current_process}", timeout_ms=15000
+                        f".process /i {self.current_session.current_process}", timeout_ms=get_timeout_for_command(".process /i {self.current_session.current_process}")
                     )
                     recovery_info["steps_completed"].append("process_context_restored")
                 except Exception as e:
@@ -379,7 +383,7 @@ class SessionRecovery:
                 
                 try:
                     result = send_command(
-                        f"~{self.current_session.current_thread}s", timeout_ms=5000
+                        f"~{self.current_session.current_thread}s", timeout_ms=get_timeout_for_command("~{self.current_session.current_thread}s")
                     )
                     recovery_info["steps_completed"].append("thread_context_restored")
                 except Exception as e:
@@ -558,7 +562,7 @@ class SessionRecovery:
     def _detect_current_mode(self) -> str:
         """Detect current debugging mode."""
         try:
-            result = send_command(".effmach", timeout_ms=5000)
+            result = send_command(".effmach", timeout_ms=get_timeout_for_command(".effmach"))
             if any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
                 return "kernel"
             else:

@@ -13,10 +13,16 @@ from core.communication import send_command, TimeoutError, CommunicationError
 from core.context import get_context_manager
 from core.error_handler import enhance_error, error_enhancer, DebugContext, ErrorCategory
 from core.hints import get_parameter_help, validate_tool_parameters
-from core.performance import execute_optimized_command
+from core.execution import execute_command
 from .tool_utilities import detect_kernel_mode
 
 logger = logging.getLogger(__name__)
+
+def _get_timeout(command: str) -> int:
+    """Helper function to get timeout for commands using unified system."""
+    from core.execution.timeout_resolver import resolve_timeout
+    from config import DebuggingMode
+    return resolve_timeout(command, DebuggingMode.VM_NETWORK)
 
 
 def register_analysis_tools(mcp: FastMCP):
@@ -25,7 +31,7 @@ def register_analysis_tools(mcp: FastMCP):
     @mcp.tool()
     async def analyze_process(ctx: Context, action: str, address: str = "", save_context: bool = True) -> Union[str, Dict[str, Any]]:
         """
-        Analyze processes in the debugging session with enhanced parameter validation.
+        Analyze processes in the debugging session.
         
         Args:
             ctx: The MCP context
@@ -34,7 +40,7 @@ def register_analysis_tools(mcp: FastMCP):
             save_context: Whether to save current context before switching (default: True)
             
         Returns:
-            Process analysis results or enhanced error information
+            Process analysis results
         """
         logger.debug(f"Analyze process action: {action}, address: {address}")
         
@@ -70,118 +76,126 @@ def register_analysis_tools(mcp: FastMCP):
             context_mgr = get_context_manager()
             
             if action == "list":
+                # List all processes
                 try:
-                    result = send_command("!process 0 0", timeout_ms=60000)
+                    result = send_command("!process 0 0", timeout_ms=_get_timeout("!process 0 0"))
                     
-                    # Add next steps suggestions
-                    help_info = get_parameter_help("analyze_process", "list")
-                    next_steps = help_info.get("next_steps", [])
-                    if next_steps:
-                        return {
-                            "output": result,
-                            "next_steps": next_steps,
-                            "tip": "Copy a process address from the output above to use with other actions"
-                        }
+                    return {
+                        "output": result,
+                        "next_steps": [
+                            "Copy process address from output for other actions",
+                            "Use analyze_process(action='info', address='...') for details", 
+                            "Switch context with analyze_process(action='switch', address='...')"
+                        ],
+                        "tip": "Copy a process address from the output above to use with other actions"
+                    }
                     
-                    return result
-                except TimeoutError as e:
-                    enhanced_error = enhance_error("timeout", command="!process 0 0", timeout_ms=60000)
+                except (CommunicationError, TimeoutError) as e:
+                    enhanced_error = enhance_error("timeout", command="!process 0 0", timeout_ms=_get_timeout("!process 0 0"))
                     return enhanced_error.to_dict()
-            
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!process 0 0", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "switch":
+                if not address:
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_process", missing_param="address")
+                    return enhanced_error.to_dict()
+                    
                 # Save current context if requested
                 if save_context:
                     saved = context_mgr.push_context(send_command)
                     logger.debug(f"Saved context before process switch")
                 
-                # Switch to the process
                 try:
-                    success = context_mgr.switch_to_process(address, send_command)
-                    if success:
-                        error_enhancer.update_context(DebugContext.PROCESS_CONTEXT, {"current_process": address})
-                        
-                        # Get next steps
-                        help_info = get_parameter_help("analyze_process", "switch")
-                        next_steps = help_info.get("next_steps", [])
-                        
-                        return {
-                            "message": f"Successfully switched to process {address}",
-                            "next_steps": next_steps,
-                            "tip": "Use analyze_process(action='restore') to return to previous context"
-                        }
-                    else:
-                        enhanced_error = enhance_error("context", 
-                                                     operation="process switch", 
-                                                     context_error=f"Failed to switch to process {address}")
-                        return enhanced_error.to_dict()
-                except CommunicationError as e:
-                    enhanced_error = enhance_error("connection", original_error=str(e))
-                    return enhanced_error.to_dict()
-            
-            elif action == "info":
-                try:
-                    result = send_command(f"!process {address} 7", timeout_ms=30000)
-                    return result
-                except TimeoutError as e:
-                    enhanced_error = enhance_error("timeout", command=f"!process {address} 7", timeout_ms=30000)
-                    return enhanced_error.to_dict()
-            
-            elif action == "peb":
-                # Check if we're in user mode (PEB is user-mode only)
-                if error_enhancer.current_context == DebugContext.KERNEL_MODE:
-                    enhanced_error = enhance_error("workflow", 
-                                                 message="PEB (Process Environment Block) is only available in user-mode debugging")
-                    error_dict = enhanced_error.to_dict()
-                    error_dict["suggestions"] = [
-                        "PEB is a user-mode concept and not available in kernel debugging",
-                        "Use analyze_process(action='info', address='...') for kernel-mode process information",
-                        "Switch to user-mode debugging to access PEB information"
-                    ]
-                    return error_dict
-                
-                if address:
-                    # Switch to process first, then get PEB
-                    saved = context_mgr.push_context(send_command)
-                    success = context_mgr.switch_to_process(address, send_command)
+                    # Switch to the specified process
+                    switch_cmd = f".process /i {address}"
+                    result = send_command(switch_cmd, timeout_ms=_get_timeout(switch_cmd))
                     
-                    if success:
-                        try:
-                            peb_result = send_command("!peb", timeout_ms=15000)
-                            context_mgr.pop_context(send_command)  # Restore context
-                            return peb_result
-                        except TimeoutError as e:
-                            context_mgr.pop_context(send_command)  # Restore context
-                            enhanced_error = enhance_error("timeout", command="!peb", timeout_ms=15000)
-                            return enhanced_error.to_dict()
-                    else:
-                        enhanced_error = enhance_error("context", 
-                                                     operation="PEB analysis", 
-                                                     context_error=f"Failed to switch to process {address}")
-                        return enhanced_error.to_dict()
-                else:
-                    # Get PEB for current process
-                    try:
-                        result = send_command("!peb", timeout_ms=15000)
-                        return result
-                    except TimeoutError as e:
-                        enhanced_error = enhance_error("timeout", command="!peb", timeout_ms=15000)
-                        return enhanced_error.to_dict()
-            
-            elif action == "restore":
-                # Restore previous context
-                success = context_mgr.pop_context(send_command)
-                if success:
-                    error_enhancer.update_context(DebugContext.UNKNOWN)  # Reset context
-                    return "Successfully restored previous process context"
-                else:
-                    enhanced_error = enhance_error("context", 
-                                                 operation="context restore", 
-                                                 context_error="No previous context to restore")
+                    return {
+                        "success": True,
+                        "output": result,
+                        "switched_to": address,
+                        "next_steps": [
+                            "Context switch initiated",
+                            "Use 'g' command to let target execute", 
+                            "After break, context will be in the target process"
+                        ]
+                    }
+                    
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=switch_cmd, original_error=str(e))
                     return enhanced_error.to_dict()
+                    
+            elif action == "info":
+                if not address:
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_process", missing_param="address")
+                    return enhanced_error.to_dict()
+                
+                try:
+                    # Get detailed process information
+                    result = send_command(f"!process {address} 7", timeout_ms=_get_timeout(f"!process {address} 7"))
+                    return {"output": result, "process_address": address}
+                except (CommunicationError, TimeoutError) as e:
+                    enhanced_error = enhance_error("timeout", command=f"!process {address} 7", timeout_ms=_get_timeout(f"!process {address} 7"))
+                    return enhanced_error.to_dict()
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"!process {address} 7", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
+            elif action == "peb":
+                # Get Process Environment Block information
+                if detect_kernel_mode():
+                    return {
+                        "error": "PEB analysis not available in kernel mode",
+                        "suggestion": "Use !process command for kernel-mode process analysis",
+                        "category": "mode_mismatch"
+                    }
+                
+                try:
+                    if address:
+                        # Switch to process first, then get PEB
+                        switch_cmd = f".process /i {address}"
+                        send_command(switch_cmd, timeout_ms=_get_timeout(switch_cmd))
+                        
+                    peb_result = send_command("!peb", timeout_ms=_get_timeout("!peb"))
+                    return {"output": peb_result, "context": "Process Environment Block"}
+                    
+                except (CommunicationError, TimeoutError) as e:
+                    enhanced_error = enhance_error("timeout", command="!peb", timeout_ms=_get_timeout("!peb"))
+                    return enhanced_error.to_dict()
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!peb", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
+            elif action == "restore":
+                try:
+                    success = context_mgr.pop_context(send_command)
+                    if success:
+                        error_enhancer.update_context(DebugContext.UNKNOWN)  # Reset context
+                        result = send_command("!peb", timeout_ms=_get_timeout("!peb"))
+                        return {"success": True, "message": "Context restored", "current_context": result[:200]}
+                    else:
+                        return {"success": False, "message": "No saved context to restore"}
+                except (CommunicationError, TimeoutError) as e:
+                    enhanced_error = enhance_error("timeout", command="!peb", timeout_ms=_get_timeout("!peb"))
+                    return enhanced_error.to_dict()
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!peb", original_error=str(e))
+                    return enhanced_error.to_dict()
+            
+            else:
+                return {
+                    "error": f"Unknown action: {action}",
+                    "available_actions": ["list", "switch", "info", "peb", "restore"],
+                    "examples": [
+                        "analyze_process(action='list')",
+                        "analyze_process(action='info', address='0xffff8e0e481d7080')"
+                    ]
+                }
                 
         except Exception as e:
-            logger.error(f"Error in analyze_process: {e}")
-            enhanced_error = enhance_error("workflow", message=f"Error in process analysis: {str(e)}")
+            enhanced_error = enhance_error("unexpected", tool_name="analyze_process", original_error=str(e))
             return enhanced_error.to_dict()
 
     @mcp.tool()
@@ -205,97 +219,114 @@ def register_analysis_tools(mcp: FastMCP):
             
             if action == "list":
                 # List all threads
-                result = send_command("!thread", timeout_ms=30000)
-                return result
-            
+                try:
+                    result = send_command("!thread", timeout_ms=_get_timeout("!thread"))
+                    return {"output": result, "note": "Copy thread address for detailed analysis"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!thread", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "switch":
                 if not address:
-                    return {"error": "Thread address required for switch action"}
-                
-                success = context_mgr.switch_to_thread(address, send_command)
-                if success:
-                    return f"Successfully switched to thread {address}"
-                else:
-                    return {"error": f"Failed to switch to thread {address}"}
-            
-            elif action == "info":
-                if not address:
-                    return {"error": "Thread address required for info action"}
-                
-                result = send_command(f"!thread {address}", timeout_ms=20000)
-                return result
-            
-            elif action == "stack":
-                if address:
-                    # Switch to thread first, then get stack
-                    saved = context_mgr.push_context(send_command)
-                    success = context_mgr.switch_to_thread(address, send_command)
-                    
-                    if success:
-                        stack_result = send_command(f"k {count}", timeout_ms=15000)
-                        context_mgr.pop_context(send_command)  # Restore context
-                        return stack_result
-                    else:
-                        return {"error": f"Failed to switch to thread {address} for stack trace"}
-                else:
-                    # Get stack for current thread
-                    result = send_command(f"k {count}", timeout_ms=15000)
-                    return result
-            
-            elif action == "all_stacks":
-                # Get stacks for multiple threads (limited to avoid overwhelming output)
-                max_threads = min(count, 10)  # Limit to 10 threads max
-                
-                # Get thread list
-                thread_list = send_command("!thread", timeout_ms=30000)
-                
-                # Parse thread addresses (simplified)
-                thread_addresses = re.findall(r'THREAD\s+([a-fA-F0-9`]+)', thread_list)
-                
-                if not thread_addresses:
-                    return {"error": "No threads found"}
-                
-                results = []
-                saved_context = context_mgr.push_context(send_command)
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_thread", missing_param="address")
+                    return enhanced_error.to_dict()
                 
                 try:
-                    for i, thread_addr in enumerate(thread_addresses[:max_threads]):
-                        success = context_mgr.switch_to_thread(thread_addr, send_command)
-                        if success:
-                            stack = send_command("k 10", timeout_ms=10000)  # Shorter stacks for multiple threads
-                            results.append(f"Thread {thread_addr}:\n{stack}\n")
-                        else:
-                            results.append(f"Thread {thread_addr}: Failed to switch\n")
-                
-                finally:
-                    if saved_context:
-                        context_mgr.pop_context(send_command)
-                
-                return "\n".join(results)
-            
-            elif action == "teb":
-                if address:
-                    # Switch to thread first, then get TEB
-                    saved = context_mgr.push_context(send_command)
-                    success = context_mgr.switch_to_thread(address, send_command)
+                    switch_cmd = f"~{address}s"
+                    result = send_command(switch_cmd, timeout_ms=_get_timeout(switch_cmd))
+                    return {"output": result, "switched_to": address}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=switch_cmd, original_error=str(e))
+                    return enhanced_error.to_dict()
                     
-                    if success:
-                        teb_result = send_command("!teb", timeout_ms=15000)
-                        context_mgr.pop_context(send_command)  # Restore context
-                        return teb_result
-                    else:
-                        return {"error": f"Failed to switch to thread {address} for TEB analysis"}
-                else:
-                    # Get TEB for current thread
-                    result = send_command("!teb", timeout_ms=15000)
-                    return result
-            
+            elif action == "info":
+                if not address:
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_thread", missing_param="address")
+                    return enhanced_error.to_dict()
+                
+                try:
+                    result = send_command(f"!thread {address}", timeout_ms=_get_timeout(f"!thread {address}"))
+                    return {"output": result, "thread_address": address}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"!thread {address}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
+            elif action == "stack":
+                try:
+                    if address:
+                        # Switch to thread first, then get stack
+                        switch_cmd = f"~{address}s"
+                        send_command(switch_cmd, timeout_ms=_get_timeout(switch_cmd))
+                    
+                    stack_result = send_command(f"k {count}", timeout_ms=_get_timeout(f"k {count}"))
+                    return {"output": stack_result, "stack_frames": count}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"k {count}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
+            elif action == "all_stacks":
+                try:
+                    result = send_command(f"k {count}", timeout_ms=_get_timeout(f"k {count}"))
+                    
+                    # Get basic thread list for context
+                    thread_list = send_command("!thread", timeout_ms=_get_timeout("!thread"))
+                    
+                    # For performance, show limited stacks for multiple threads
+                    stacks = []
+                    try:
+                        # Try to get stacks for a few threads (simplified approach)
+                        for i in range(min(3, count // 10)):  # Sample a few threads
+                            try:
+                                stack = send_command("k 10", timeout_ms=_get_timeout("k 10"))  # Shorter stacks for multiple threads
+                                stacks.append(f"Thread {i} stack (sample):\n{stack}")
+                            except:
+                                continue
+                    except:
+                        pass
+                    
+                    return {
+                        "output": result,
+                        "thread_list": thread_list[:500] + "..." if len(thread_list) > 500 else thread_list,
+                        "sample_stacks": stacks
+                    }
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"k {count}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
+            elif action == "teb":
+                # Get Thread Environment Block information  
+                if detect_kernel_mode():
+                    return {
+                        "error": "TEB analysis not available in kernel mode",
+                        "suggestion": "Use !thread command for kernel-mode thread analysis",
+                        "category": "mode_mismatch"
+                    }
+                
+                try:
+                    if address:
+                        # Switch to thread first
+                        switch_cmd = f"~{address}s"
+                        send_command(switch_cmd, timeout_ms=_get_timeout(switch_cmd))
+                        
+                    teb_result = send_command("!teb", timeout_ms=_get_timeout("!teb"))
+                    return {"output": teb_result, "context": "Thread Environment Block"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!teb", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             else:
-                return {"error": f"Unknown action: {action}. Use 'list', 'switch', 'info', 'stack', 'all_stacks', or 'teb'"}
+                return {
+                    "error": f"Unknown action: {action}",
+                    "available_actions": ["list", "switch", "info", "stack", "all_stacks", "teb"],
+                    "examples": [
+                        "analyze_thread(action='list')",
+                        "analyze_thread(action='stack', count=20)"
+                    ]
+                }
                 
         except Exception as e:
-            logger.error(f"Error in analyze_thread: {e}")
-            return {"error": str(e)}
+            enhanced_error = enhance_error("unexpected", tool_name="analyze_thread", original_error=str(e))
+            return enhanced_error.to_dict()
 
     @mcp.tool()
     async def analyze_memory(ctx: Context, action: str, address: str = "", type_name: str = "", length: int = 32) -> Union[str, Dict[str, Any]]:
@@ -321,121 +352,80 @@ def register_analysis_tools(mcp: FastMCP):
             
             if action == "display":
                 if not address:
-                    return {"error": "Memory address required for display action"}
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_memory", missing_param="address")
+                    return enhanced_error.to_dict()
                 
-                # Display memory as DWORDs by default
-                result = send_command(f"dd {address} L{length//4}", timeout_ms=15000)
-                return result
-            
+                try:
+                    # Display memory content
+                    result = send_command(f"dd {address} l{length}", timeout_ms=_get_timeout(f"dd {address} l{length}"))
+                    return {"output": result, "address": address, "length": length}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"dd {address} l{length}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "type":
-                if not type_name:
-                    return {"error": "Type name required for type action"}
+                if not address or not type_name:
+                    missing = "address and type_name" if not address and not type_name else ("address" if not address else "type_name")
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_memory", missing_param=missing)
+                    return enhanced_error.to_dict()
                 
-                if address:
-                    result = send_command(f"dt {type_name} {address}", timeout_ms=15000)
-                else:
-                    result = send_command(f"dt {type_name}", timeout_ms=15000)
-                return result
-            
+                try:
+                    # Display typed structure
+                    result = send_command(f"dt {type_name} {address}", timeout_ms=_get_timeout(f"dt {type_name} {address}"))
+                    return {"output": result, "type": type_name, "address": address}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"dt {type_name} {address}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "search":
                 if not address:
-                    return {"error": "Search pattern required in address field"}
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_memory", missing_param="address")
+                    return enhanced_error.to_dict()
                 
-                # Use the address field as search pattern
-                result = send_command(f"s -a 0 L?80000000 \"{address}\"", timeout_ms=30000)
-                return result
-            
+                try:
+                    # Search for pattern in memory range
+                    search_cmd = f"s {address} L{length} {address[:8]}"  # Search for first 8 chars as pattern
+                    result = send_command(search_cmd, timeout_ms=_get_timeout(search_cmd))
+                    return {"output": result, "search_range": f"{address} L{length}"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=search_cmd, original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "pte":
                 if not address:
-                    return {"error": "Address required for PTE analysis"}
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_memory", missing_param="address")
+                    return enhanced_error.to_dict()
                 
-                result = send_command(f"!pte {address}", timeout_ms=15000)
-                return result
-            
+                try:
+                    # Page Table Entry analysis
+                    result = send_command(f"!pte {address}", timeout_ms=_get_timeout(f"!pte {address}"))
+                    return {"output": result, "pte_address": address}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"!pte {address}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "regions":
-                # Show memory regions - use different commands based on debugging mode
-                if is_kernel_mode:
-                    # Kernel mode: Use kernel-specific memory analysis
-                    if address:
-                        # For specific address in kernel mode, try !pte and !pool commands
-                        try:
-                            pte_result = send_command(f"!pte {address}", timeout_ms=15000)
-                            return {
-                                "debugging_mode": "kernel",
-                                "address_analysis": pte_result,
-                                "note": "Use '!vm' for virtual memory summary, '!pool' for pool analysis, '!pfn' for physical memory info"
-                            }
-                        except Exception as e:
-                            return {
-                                "debugging_mode": "kernel", 
-                                "error": f"PTE analysis failed: {str(e)}",
-                                "suggestion": "Try using kernel-specific commands like '!vm', '!pool', or '!pfn'"
-                            }
-                    else:
-                        # General memory regions overview for kernel mode
-                        try:
-                            # Get virtual memory summary
-                            vm_result = send_command("!vm", timeout_ms=20000)
-                            return {
-                                "debugging_mode": "kernel",
-                                "virtual_memory_summary": vm_result,
-                                "additional_commands": {
-                                    "pool_analysis": "Use run_command(command='!pool') for pool memory analysis",
-                                    "physical_memory": "Use run_command(command='!pfn') for physical frame database",
-                                    "specific_address": "Use analyze_memory(action='regions', address='0x...') for specific address analysis"
-                                }
-                            }
-                        except Exception as e:
-                            return {
-                                "debugging_mode": "kernel",
-                                "error": f"Virtual memory analysis failed: {str(e)}",
-                                "available_commands": [
-                                    "!vm - Virtual memory summary",
-                                    "!pool - Pool memory analysis", 
-                                    "!pfn - Physical frame number database",
-                                    "!pte <address> - Page table entry for specific address"
-                                ],
-                                "suggestion": "Kernel mode memory analysis requires specific addresses or use kernel memory commands directly"
-                            }
-                else:
-                    # User mode: Use !address command (original behavior)
-                    if address:
-                        try:
-                            result = send_command(f"!address {address}", timeout_ms=20000)
-                            return {
-                                "debugging_mode": "user",
-                                "address_analysis": result
-                            }
-                        except Exception as e:
-                            return {
-                                "debugging_mode": "user",
-                                "error": f"Address analysis failed: {str(e)}",
-                                "suggestion": "Ensure you're attached to a user-mode process and the address is valid"
-                            }
-                    else:
-                        try:
-                            result = send_command("!address -summary", timeout_ms=20000)
-                            return {
-                                "debugging_mode": "user",
-                                "memory_regions_summary": result
-                            }
-                        except Exception as e:
-                            return {
-                                "debugging_mode": "user",
-                                "error": f"Memory regions summary failed: {str(e)}",
-                                "suggestions": [
-                                    "Ensure you're attached to a user-mode process",
-                                    "Try '!vadump' for virtual address dump",
-                                    "Use 'analyze_memory(action=\"regions\", address=\"0x...\")' for specific address analysis"
-                                ]
-                            }
-            
+                try:
+                    # Virtual memory regions
+                    result = send_command("!vm", timeout_ms=_get_timeout("!vm"))
+                    return {"output": result, "context": "Virtual memory regions"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!vm", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             else:
-                return {"error": f"Unknown action: {action}. Use 'display', 'type', 'search', 'pte', or 'regions'"}
+                return {
+                    "error": f"Unknown action: {action}",
+                    "available_actions": ["display", "type", "search", "pte", "regions"],
+                    "examples": [
+                        "analyze_memory(action='display', address='0x1000')",
+                        "analyze_memory(action='type', address='0x1000', type_name='_EPROCESS')"
+                    ]
+                }
                 
         except Exception as e:
-            logger.error(f"Error in analyze_memory: {e}")
-            return {"error": str(e)}
+            enhanced_error = enhance_error("unexpected", tool_name="analyze_memory", original_error=str(e))
+            return enhanced_error.to_dict()
 
     @mcp.tool()
     async def analyze_kernel(ctx: Context, action: str, address: str = "") -> Union[str, Dict[str, Any]]:
@@ -455,40 +445,66 @@ def register_analysis_tools(mcp: FastMCP):
         try:
             if action == "object":
                 if not address:
-                    return {"error": "Object address required for object analysis"}
+                    enhanced_error = enhance_error("parameter", tool_name="analyze_kernel", missing_param="address")
+                    return enhanced_error.to_dict()
                 
-                result = send_command(f"!object {address}", timeout_ms=15000)
-                return result
-            
+                try:
+                    result = send_command(f"!object {address}", timeout_ms=_get_timeout(f"!object {address}"))
+                    return {"output": result, "object_address": address}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command=f"!object {address}", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "idt":
-                # Show Interrupt Descriptor Table
-                result = send_command("!idt", timeout_ms=20000)
-                return result
-            
+                try:
+                    result = send_command("!idt", timeout_ms=_get_timeout("!idt"))
+                    return {"output": result, "context": "Interrupt Descriptor Table"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!idt", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "handles":
-                # Show system handles
-                if address:
-                    result = send_command(f"!handle {address}", timeout_ms=30000)
-                else:
-                    result = send_command("!handle 0 f", timeout_ms=60000)
-                return result
-            
+                try:
+                    result = send_command("!handle", timeout_ms=_get_timeout("!handle"))
+                    return {"output": result, "context": "System handles"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="!handle", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             elif action == "interrupts":
-                if not address:
-                    return {"error": "Interrupt address required"}
-                
-                # Display interrupt structure
-                result = send_command(f"dt nt!_KINTERRUPT {address}", timeout_ms=15000)
-                return result
-            
+                if address:
+                    try:
+                        result = send_command(f"!pic {address}", timeout_ms=_get_timeout(f"!pic {address}"))
+                        return {"output": result, "interrupt_controller": address}
+                    except Exception as e:
+                        enhanced_error = enhance_error("execution", command=f"!pic {address}", original_error=str(e))
+                        return enhanced_error.to_dict()
+                else:
+                    try:
+                        result = send_command("!irql", timeout_ms=_get_timeout("!irql"))
+                        return {"output": result, "context": "Current IRQL and interrupts"}
+                    except Exception as e:
+                        enhanced_error = enhance_error("execution", command="!irql", original_error=str(e))
+                        return enhanced_error.to_dict()
+                        
             elif action == "modules":
-                # List loaded modules with details
-                result = send_command("lm v", timeout_ms=30000)
-                return result
-            
+                try:
+                    result = send_command("lm", timeout_ms=_get_timeout("lm"))
+                    return {"output": result, "context": "Loaded modules"}
+                except Exception as e:
+                    enhanced_error = enhance_error("execution", command="lm", original_error=str(e))
+                    return enhanced_error.to_dict()
+                    
             else:
-                return {"error": f"Unknown action: {action}. Use 'object', 'idt', 'handles', 'interrupts', or 'modules'"}
+                return {
+                    "error": f"Unknown action: {action}",
+                    "available_actions": ["object", "idt", "handles", "interrupts", "modules"],
+                    "examples": [
+                        "analyze_kernel(action='idt')",
+                        "analyze_kernel(action='object', address='0xffffffff80000000')"
+                    ]
+                }
                 
         except Exception as e:
-            logger.error(f"Error in analyze_kernel: {e}")
-            return {"error": str(e)} 
+            enhanced_error = enhance_error("unexpected", tool_name="analyze_kernel", original_error=str(e))
+            return enhanced_error.to_dict() 

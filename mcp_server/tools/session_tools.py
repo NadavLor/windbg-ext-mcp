@@ -1,18 +1,29 @@
 """
 Session management tools for WinDbg MCP server.
 
-Simplified session management with essential functionality.
+This module contains tools for managing debugging sessions, connections, and diagnostics.
 """
 import logging
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, Optional
+from datetime import datetime
 from fastmcp import FastMCP, Context
 
-from core.communication import test_connection, send_command, send_handler_command
+from core.communication import (
+    send_command, send_handler_command, test_connection, test_target_connection
+)
+from core.hints import get_parameter_help
+# _get_timeout moved to unified execution system
 
 logger = logging.getLogger(__name__)
 
+def _get_timeout(command: str) -> int:
+    """Helper function to get timeout for commands using unified system."""
+    from core.execution.timeout_resolver import resolve_timeout
+    from config import DebuggingMode
+    return resolve_timeout(command, DebuggingMode.VM_NETWORK)
+
 def register_session_tools(mcp: FastMCP):
-    """Register session management tools."""
+    """Register all session management tools."""
     
     @mcp.tool()
     async def debug_session(ctx: Context, action: str = "status") -> Dict[str, Any]:
@@ -29,61 +40,65 @@ def register_session_tools(mcp: FastMCP):
         logger.debug(f"Debug session action: {action}")
         
         try:
-            if action == "connection":
+            if action == "status":
+                # Get comprehensive session status
                 connected = test_connection()
-                return {
-                    "connected": connected,
-                    "status": "Connected to WinDbg extension" if connected else "Not connected to WinDbg extension"
-                }
-            
-            elif action == "status":
-                try:
-                    # Test connection and get basic status
-                    connected = test_connection()
-                    if connected:
-                        version_output = send_command("version", timeout_ms=5000)
-                        return {
-                            "connected": True,
-                            "status": "Active debugging session",
-                            "version_info": version_output[:200] + "..." if len(version_output) > 200 else version_output
-                        }
-                    else:
-                        return {
-                            "connected": False,
-                            "status": "No active connection to WinDbg extension"
-                        }
-                except Exception as e:
+                if not connected:
                     return {
                         "connected": False,
-                        "status": "Connection test failed",
-                        "error": str(e)
+                        "error": "WinDbg extension not connected",
+                        "suggestions": [
+                            "Load the extension: .load C:\\path\\to\\windbgmcpExt.dll",
+                            "Verify WinDbg is running",
+                            "Check extension is properly compiled"
+                        ]
                     }
-            
+                
+                # Get version and status information
+                version_output = send_command("version", timeout_ms=_get_timeout("version"))
+                
+                return {
+                    "connected": True,
+                    "status": "Active debugging session",
+                    "version_info": version_output[:200] + "..." if len(version_output) > 200 else version_output
+                }
+                
+            elif action == "connection":
+                # Test connection and return detailed status
+                try:
+                    connected = test_connection()
+                    if connected:
+                        return {"connected": True, "status": "Extension connection OK"}
+                    else:
+                        return {"connected": False, "status": "Extension not available"}
+                except Exception as e:
+                    return {"connected": False, "error": str(e)}
+                    
             elif action == "version":
                 try:
-                    result = send_handler_command("version", timeout_ms=5000)
+                    result = send_handler_command("version", timeout_ms=_get_timeout("version"))
                     return {
+                        "success": True,
                         "version": result.get("output", "unknown"),
-                        "extension_info": result
+                        "timestamp": datetime.now().isoformat()
                     }
                 except Exception as e:
                     return {
+                        "success": False,
                         "error": f"Failed to get version: {e}",
                         "status": "version_failed"
                     }
             
             else:
                 return {
-                    "error": f"Unknown action '{action}'",
+                    "error": f"Unknown action: {action}",
                     "available_actions": ["status", "connection", "version"],
-                    "help": "Use debug_session with action='status' to get basic session info"
+                    "usage": "debug_session(action='status')"
                 }
                 
         except Exception as e:
-            return {
-                "error": f"Debug session failed: {e}",
-                "action": action
-            }
+            logger.error(f"Debug session error: {e}")
+            return {"error": str(e), "action": action}
 
     @mcp.tool()
     async def connection_manager(ctx: Context, action: str = "status") -> Dict[str, Any]:
@@ -101,45 +116,41 @@ def register_session_tools(mcp: FastMCP):
         
         try:
             if action == "status":
-                connected = test_connection()
+                # Get connection health from communication manager
+                from core.communication import _get_communication_manager
+                comm_manager = _get_communication_manager()
+                health = comm_manager.get_connection_health()
+                
                 return {
-                    "connection_status": "connected" if connected else "disconnected",
-                    "extension_available": connected,
-                    "status": "WinDbg extension is responding" if connected else "WinDbg extension not responding"
+                    "connection_status": "connected" if health.is_connected else "disconnected",
+                    "extension_available": health.extension_responsive,
+                    "target_responsive": health.target_responsive,
+                    "consecutive_failures": health.consecutive_failures,
+                    "last_error": health.last_error,
+                    "status": "WinDbg extension is responding" if health.extension_responsive else "Extension not responding"
                 }
-            
+                
             elif action == "test":
-                try:
-                    # Test with a simple command
-                    result = send_command("version", timeout_ms=5000)
-                    return {
-                        "connection_test": "passed",
-                        "test_command": "version",
-                        "result_preview": result[:100] + "..." if len(result) > 100 else result,
-                        "status": "Connection working normally"
-                    }
-                except Exception as e:
-                    return {
-                        "connection_test": "failed",
-                        "error": str(e),
-                        "recommendations": [
-                            "Check WinDbg extension is loaded: .load path\\to\\windbgmcpExt.dll",
-                            "Verify WinDbg is running and responsive"
-                        ]
-                    }
-            
+                # Run comprehensive connection test
+                result = send_command("version", timeout_ms=_get_timeout("version"))
+                
+                return {
+                    "test_command": "version",
+                    "success": bool(result),
+                    "response_length": len(result) if result else 0,
+                    "status": "Connection test passed" if result else "Connection test failed"
+                }
+                
             else:
                 return {
-                    "error": f"Unknown action '{action}'",
+                    "error": f"Unknown action: {action}",
                     "available_actions": ["status", "test"],
-                    "help": "Use connection_manager to check and test WinDbg extension connection"
+                    "usage": "connection_manager(action='status')"
                 }
                 
         except Exception as e:
-            return {
-                "error": f"Connection manager failed: {e}",
-                "action": action
-            }
+            logger.error(f"Connection manager error: {e}")
+            return {"error": str(e), "action": action}
 
     @mcp.tool()
     async def session_manager(ctx: Context, action: str = "status") -> Dict[str, Any]:
@@ -157,58 +168,57 @@ def register_session_tools(mcp: FastMCP):
         
         try:
             if action == "status":
-                try:
-                    # Get basic session information
-                    connected = test_connection()
-                    if connected:
-                        version_output = send_command("version", timeout_ms=5000)
-                        
-                        # Determine if kernel or user mode
-                        is_kernel = "kernel" in version_output.lower()
-                        
-                        return {
-                            "session_active": True,
-                            "debugging_mode": "kernel" if is_kernel else "user",
-                            "connection_status": "active",
-                            "basic_info": version_output[:150] + "..." if len(version_output) > 150 else version_output
-                        }
-                    else:
-                        return {
-                            "session_active": False,
-                            "connection_status": "disconnected",
-                            "message": "No active debugging session"
-                        }
-                except Exception as e:
-                    return {
-                        "session_active": False,
-                        "error": str(e),
-                        "message": "Failed to get session status"
-                    }
-            
+                # Get basic session status
+                connected = test_connection()
+                target_connected, target_status = test_target_connection()
+                
+                return {
+                    "extension_connected": connected,
+                    "target_connected": target_connected,
+                    "target_status": target_status,
+                    "overall_status": "ready" if connected and target_connected else "not_ready"
+                }
+                
             elif action == "info":
+                # Get detailed session information
+                if not test_connection():
+                    return {"error": "Extension not connected"}
+                
                 try:
-                    # Get more detailed information
-                    modules_output = send_command("lm", timeout_ms=10000)
+                    version_output = send_command("version", timeout_ms=_get_timeout("version"))
+                    
+                    # Detect debugging mode
+                    is_kernel = "kernel" in version_output.lower()
+                    is_user = "user" in version_output.lower() or not is_kernel
+                    
+                    # Try to get module information
+                    try:
+                        modules_output = send_command("lm", timeout_ms=_get_timeout("lm"))
+                        module_count = len([line for line in modules_output.split('\n') if 'image' in line.lower()])
+                    except:
+                        module_count = "unknown"
+                    
                     return {
-                        "session_info": "detailed",
-                        "loaded_modules": modules_output[:300] + "..." if len(modules_output) > 300 else modules_output,
-                        "status": "Retrieved session information successfully"
+                        "debugging_mode": "kernel" if is_kernel else "user",
+                        "basic_info": version_output[:150] + "..." if len(version_output) > 150 else version_output,
+                        "module_count": module_count,
+                        "capabilities": {
+                            "can_break": True,
+                            "can_analyze": True,
+                            "can_modify": is_kernel
+                        }
                     }
+                    
                 except Exception as e:
-                    return {
-                        "error": f"Failed to get session info: {e}",
-                        "message": "Could not retrieve detailed session information"
-                    }
+                    return {"error": f"Failed to get session info: {e}"}
             
             else:
                 return {
-                    "error": f"Unknown action '{action}'",
+                    "error": f"Unknown action: {action}",
                     "available_actions": ["status", "info"],
-                    "help": "Use session_manager to get session status and information"
+                    "usage": "session_manager(action='status')"
                 }
                 
         except Exception as e:
-            return {
-                "error": f"Session manager failed: {e}",
-                "action": action
-            } 
+            logger.error(f"Session manager error: {e}")
+            return {"error": str(e), "action": action} 

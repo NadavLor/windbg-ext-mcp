@@ -47,7 +47,17 @@ ALWAYS_SAFE_PREFIXES = {
     # Echo and help
     ".echo", ".help", "?", "??",
     # Breakpoints (read-only)
-    "bl"
+    "bl",
+    # Version and target information
+    "version", "vertarget",
+    # Machine and architecture info
+    ".effmach", ".formats",
+    # Module and driver info
+    "!drivers", "!devobj", "!irp",
+    # PE header analysis
+    "!dh",
+    # Memory and address info
+    "!vprot", "!pte"
 }
 
 def validate_command(command: str) -> Tuple[bool, Optional[str]]:

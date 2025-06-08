@@ -53,7 +53,7 @@ Welcome to the complete documentation for the WinDbg MCP Extension - a powerful 
 ## 🆕 **What's New**
 
 ### **Latest Features**
-- ✅ **Unified Callback Enumeration:** `mcp_list_callbacks` tool for comprehensive EDR detection
+
 - ✅ **LLM Automation:** Safe execution control commands now enabled
 - ✅ **Hybrid Architecture:** Python + C++ for optimal performance and usability
 - ✅ **Network Debugging:** Enhanced VM debugging with packet loss tolerance

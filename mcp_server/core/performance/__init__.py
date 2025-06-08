@@ -24,16 +24,11 @@ from .coordinator import (
 )
 
 # Global instance for use across the application
-performance_optimizer = PerformanceOptimizer()
+performance_optimizer = PerformanceOptimizer(optimization_level=OptimizationLevel.NONE)
 
 # Convenience functions that delegate to the global instance
-def execute_optimized_command(
-    command: str,
-    timeout_category: str = "normal",
-    force_fresh: bool = False
-):
-    """Execute a command with performance optimizations."""
-    return performance_optimizer.execute_optimized_command(command, timeout_category, force_fresh=force_fresh)
+# Execution functions are in the unified execution system
+# Use core.execution.execute_command instead
 
 def stream_large_command(command: str):
     """Stream large command output."""
@@ -67,7 +62,6 @@ __all__ = [
     "performance_optimizer",
     
     # Convenience functions
-    "execute_optimized_command",
     "stream_large_command",
     "get_performance_report", 
     "set_optimization_level",

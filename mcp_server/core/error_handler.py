@@ -1,5 +1,5 @@
 """
-Enhanced error handling and user experience module for WinDbg MCP Extension.
+Error handling and user experience module for WinDbg MCP Extension.
 
 This module provides context-aware error messages, debugging suggestions,
 and workflow guidance specifically tailored for kernel debugging scenarios.
@@ -34,7 +34,7 @@ class ErrorCategory(Enum):
     WORKFLOW = "workflow"
 
 class EnhancedError:
-    """Enhanced error with context-aware suggestions."""
+    """Error with context-aware suggestions."""
     
     def __init__(
         self,
@@ -77,7 +77,7 @@ class EnhancedError:
         return result
 
 class ErrorEnhancer:
-    """Main class for enhancing errors with context and suggestions."""
+    """Main class for creating errors with context and suggestions."""
     
     def __init__(self):
         self.current_context = DebugContext.UNKNOWN
@@ -92,7 +92,7 @@ class ErrorEnhancer:
         logger.debug(f"Updated debug context to: {context.value}")
     
     def enhance_parameter_error(self, tool_name: str, action: str, missing_param: str) -> EnhancedError:
-        """Create enhanced error for missing/invalid parameters."""
+        """Create error for missing/invalid parameters."""
         examples = self._get_parameter_examples(tool_name, action, missing_param)
         suggestions = self._get_parameter_suggestions(tool_name, action, missing_param)
         next_steps = self._get_parameter_next_steps(tool_name, action)
@@ -110,7 +110,7 @@ class ErrorEnhancer:
         )
     
     def enhance_connection_error(self, original_error: str) -> EnhancedError:
-        """Create enhanced error for connection issues."""
+        """Create error for connection issues."""
         suggestions = [
             "Check that WinDbg is running and the target is connected",
             "Verify the extension DLL is loaded: .load path\\to\\windbgmcpExt.dll",
@@ -138,7 +138,7 @@ class ErrorEnhancer:
         )
     
     def enhance_validation_error(self, command: str, validation_error: str) -> EnhancedError:
-        """Create enhanced error for command validation failures."""
+        """Create error for command validation failures."""
         suggestions = []
         examples = []
         
@@ -168,7 +168,7 @@ class ErrorEnhancer:
         )
     
     def enhance_context_error(self, operation: str, context_error: str) -> EnhancedError:
-        """Create enhanced error for context-related issues."""
+        """Create error for context-related issues."""
         suggestions = []
         next_steps = []
         
@@ -210,7 +210,7 @@ class ErrorEnhancer:
         )
     
     def enhance_timeout_error(self, command: str, timeout_ms: int) -> EnhancedError:
-        """Create enhanced error for timeout issues."""
+        """Create error for timeout issues."""
         suggestions = []
         next_steps = []
         
@@ -397,7 +397,7 @@ class ErrorEnhancer:
 error_enhancer = ErrorEnhancer()
 
 def enhance_error(error_type: str, **kwargs) -> EnhancedError:
-    """Convenience function to create enhanced errors."""
+    """Convenience function to create contextual errors."""
     if error_type == "parameter":
         return error_enhancer.enhance_parameter_error(
             kwargs.get("tool_name", ""),

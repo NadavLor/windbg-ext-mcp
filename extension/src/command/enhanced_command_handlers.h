@@ -91,7 +91,7 @@ public:
      * @param message The incoming JSON message.
      * @return JSON response with consolidated callback enumeration results.
      */
-    static json UnifiedCallbackEnumerationHandler(const json& message);
+
 
 private:
     // Private helper methods can be added here in the future

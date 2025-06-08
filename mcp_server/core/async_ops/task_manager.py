@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, Future
 
-from core.performance import execute_optimized_command
+from core.execution import execute_command
 
 logger = logging.getLogger(__name__)
 
@@ -319,12 +319,32 @@ class AsyncOperationManager:
     def _run_command(self, task: AsyncTask) -> Tuple[bool, str, Dict[str, Any]]:
         """Run the actual command for a task."""
         try:
-            # Use optimized command execution
-            success, result, metadata = execute_optimized_command(
-                task.command,
-                task.timeout_category
+            # Use unified execution system
+            result = execute_command(
+                command=task.command,
+                resilient=True,
+                optimize=True,
+                timeout_category=task.timeout_category
             )
-            return success, result, metadata
+            
+            if result.success:
+                metadata = {
+                    "cached": result.cached,
+                    "response_time": result.execution_time,
+                    "retries_attempted": result.retries_attempted,
+                    "timeout_ms": result.timeout_ms,
+                    "execution_mode": result.execution_mode.value
+                }
+                return True, result.result, metadata
+            else:
+                metadata = {
+                    "error": True,
+                    "response_time": result.execution_time,
+                    "retries_attempted": result.retries_attempted,
+                    "timeout_ms": result.timeout_ms,
+                    "timed_out": result.timed_out
+                }
+                return False, result.error, metadata
         except Exception as e:
             logger.error(f"Error executing task {task.task_id}: {e}")
             return False, str(e), {"error": "execution_failed"}

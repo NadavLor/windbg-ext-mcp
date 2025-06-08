@@ -445,62 +445,7 @@ analyze_kernel(action="modules")
 
 ---
 
-### **mcp_list_callbacks** ⭐ **(NEW UNIFIED TOOL)**
 
-**Purpose:** Comprehensive callback enumeration across all callback types with EDR detection.
-
-**Parameters:**
-- `callback_type` (str): Type of callbacks to enumerate (default: "all")
-  - `"all"` - All callback types (comprehensive scan)
-  - `"process"` - Process creation callbacks
-  - `"thread"` - Thread creation callbacks  
-  - `"image"` - Image load callbacks
-  - `"registry"` - Registry callbacks
-  - `"object"` - Object manager callbacks
-- `include_addresses` (bool): Include raw addresses in output (default: True)
-- `resolve_modules` (bool): Resolve addresses to module names (default: True)
-- `timeout_ms` (int): Timeout for enumeration in milliseconds (default: 60000)
-
-**Examples:**
-```python
-# Comprehensive callback enumeration (recommended)
-mcp_list_callbacks()
-
-# Fast process callback scan
-mcp_list_callbacks(callback_type="process")
-
-# Detailed analysis with module resolution
-mcp_list_callbacks(
-    callback_type="all",
-    include_addresses=True,
-    resolve_modules=True
-)
-
-# Quick registry callback check
-mcp_list_callbacks(callback_type="registry", timeout_ms=30000)
-```
-
-**Security Research Features:**
-- 🎯 **EDR Detection:** Automatically identifies third-party security drivers
-- 📊 **Comprehensive Coverage:** All core callback types in one command
-- ⚡ **Performance Optimized:** Filtering reduces execution time significantly
-- 🔍 **Address Resolution:** Automatic module name resolution
-- 📋 **Consolidated Reporting:** Single report with all callback information
-
-**Sample Output Analysis:**
-```
-🔍 Callback Analysis Results:
-• Process Creation: 10 callbacks (⚠️ Heavy monitoring detected)
-• Thread Creation: 2 callbacks  
-• Image Load: 2 callbacks
-• Registry: 0 callbacks
-• Object Manager: 0 callbacks
-
-🎯 Performance: 2.17s (full scan) vs 0.124s (filtered)
-💡 Tip: Use filtering for faster repeated scans
-```
-
----
 
 ## Performance Tools
 
@@ -748,7 +693,7 @@ These are low-level handlers called internally by Python tools or available for 
 - `execute_command_enhanced` - Enhanced execution with metadata
 - `execute_command_streaming` - Streaming for large outputs
 - `for_each_module` - Module iteration
-- `mcp_list_callbacks` - Unified callback enumeration (matches Python tool)
+
 - `session_health` - Session health check
 - `session_status` - Session status
 - `connection_status` - Connection status
@@ -783,13 +728,10 @@ breakpoint_and_continue(breakpoint="nt!NtCreateFile")
 
 **🔍 Security Research:**
 ```python
-# 1. Enumerate all callbacks (EDR detection)
-mcp_list_callbacks()
-
-# 2. Check for suspicious modules
+# 1. Check for suspicious modules
 analyze_kernel(action="modules")
 
-# 3. Analyze handles for IOCs
+# 2. Analyze handles for IOCs
 analyze_kernel(action="handles")
 ```
 
@@ -821,7 +763,7 @@ run_command(command="!process 0 0", resilient=True)
 | **Use Case** | **Primary Tools** | **Features** |
 |---|---|---|
 | **Basic Debugging** | `run_command`, `breakpoint_and_continue`, `analyze_process` | Execution control, context switching |
-| **Malware Analysis** | `mcp_list_callbacks`, `analyze_kernel`, `analyze_memory` | EDR detection, callback enumeration |
+| **Malware Analysis** | `analyze_kernel`, `analyze_memory` | Kernel analysis, memory inspection |
 | **Performance** | `async_manager`, `performance_manager`, `run_sequence` | Parallel execution, optimization |
 | **Network/VM Debugging** | `connection_manager`, `session_manager`, `troubleshoot` | Resilience, monitoring, recovery |
 | **Troubleshooting** | `diagnose_hybrid_connection`, `test_windbg_communication`, `get_help` | Diagnostics, guided solutions |
@@ -876,19 +818,13 @@ run_command(command="!process 0 0", resilient=True)
 
 ### **🔍 For Security Research**
 
-1. **Use Unified Callback Enumeration:**
+1. **Use Kernel Analysis:**
    ```python
-   # ✅ Comprehensive: One command for all callbacks
-   mcp_list_callbacks()
+   # ✅ Comprehensive: Analyze kernel structures
+   analyze_kernel(action="modules")
    
-   # ✅ Targeted: Focus on specific type
-   mcp_list_callbacks(callback_type="process")
-   ```
-
-2. **Leverage EDR Detection:**
-   ```python
-   # The tool automatically highlights third-party drivers
-   mcp_list_callbacks(resolve_modules=True)
+   # ✅ Targeted: Focus on specific areas
+   analyze_kernel(action="handles")
    ```
 
 ### **⚡ For Performance**
@@ -933,19 +869,19 @@ run_command(command="!process 0 0", resilient=True)
 
 ## Summary
 
-The WinDbg MCP Extension provides **25+ tools** organized into logical categories:
+The WinDbg MCP Extension provides **24+ tools** organized into logical categories:
 
 - **5 Session Management Tools** - Connection, health, recovery
 - **3 Command Execution Tools** - Safe command execution with automation features
-- **5 Analysis Tools** - Process, thread, memory, kernel, and callback analysis
+- **4 Analysis Tools** - Process, thread, memory, and kernel analysis
 - **2 Performance Tools** - Optimization and async execution
 - **8 Support Tools** - Help, troubleshooting, and diagnostics
-- **12 C++ Extension Handlers** - Low-level performance operations
+- **11 C++ Extension Handlers** - Low-level performance operations
 
 **Key Features:**
 - ✅ **LLM-Optimized:** Safe automation with execution control
 - ✅ **Network Debugging:** Resilient VM debugging support  
-- ✅ **Security Research:** EDR detection and callback enumeration
+- ✅ **Security Research:** Kernel analysis and memory inspection
 - ✅ **Performance:** Async execution and optimization
 - ✅ **Error Handling:** Enhanced error messages with guidance
 - ✅ **Session Recovery:** Robust session management and recovery

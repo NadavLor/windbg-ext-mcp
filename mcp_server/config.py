@@ -104,6 +104,8 @@ class TimeoutConfig:
     large_analysis: int = 180000  # Large analysis operations
     process_list: int = 300000    # Full process enumeration
     streaming: int = 600000       # Streaming operations
+    symbols: int = 180000         # Symbol operations (.reload, .sympath)
+    extended: int = 900000        # Extended operations (.reload /f, heavy symbol loading)
 
 @dataclass
 class RetryConfig:
@@ -142,6 +144,12 @@ LARGE_ANALYSIS_COMMANDS = {"!analyze -v", "!thread -1", "!process -1"}
 PROCESS_LIST_COMMANDS = {"!process 0 0", "!process 0 7", "!process 0 1f"}
 STREAMING_COMMANDS = {"!for_each_process", "!for_each_thread", "!for_each_module"}
 
+# Symbol operations that need extended timeouts
+SYMBOL_OPERATIONS = {".reload", ".reload /f", ".reload -f", ".sympath", ".symfix"}
+
+# Commands that need very long timeouts (symbol loading, etc.)
+EXTENDED_TIMEOUT_COMMANDS = {".reload /f", ".reload -f"}
+
 # Kernel-mode compatible commands for health checks
 KERNEL_HEALTH_COMMANDS = ["version", "!pcr", ".effmach"]
 
@@ -174,8 +182,14 @@ def get_timeout_for_command(command: str, mode: DebuggingMode = DebuggingMode.LO
     # Determine base timeout by command type
     cmd_lower = command.lower().strip()
     
-    # Check for process list commands first (most specific)
-    if any(proc_cmd in cmd_lower for proc_cmd in PROCESS_LIST_COMMANDS):
+    # Check for extended timeout commands first (most specific)
+    if any(ext_cmd in cmd_lower for ext_cmd in EXTENDED_TIMEOUT_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.extended
+    # Check for symbol operations
+    elif any(sym_cmd in cmd_lower for sym_cmd in SYMBOL_OPERATIONS):
+        base_timeout = DEFAULT_TIMEOUTS.symbols
+    # Check for process list commands
+    elif any(proc_cmd in cmd_lower for proc_cmd in PROCESS_LIST_COMMANDS):
         base_timeout = DEFAULT_TIMEOUTS.process_list
     # Check for streaming commands
     elif any(stream_cmd in cmd_lower for stream_cmd in STREAMING_COMMANDS):
