@@ -13,7 +13,6 @@ from core.communication import send_command, TimeoutError, CommunicationError
 from core.context import get_context_manager
 from core.error_handler import enhance_error, error_enhancer, DebugContext, ErrorCategory
 from core.hints import get_parameter_help, validate_tool_parameters
-from core.execution import execute_command
 from .tool_utilities import detect_kernel_mode
 
 logger = logging.getLogger(__name__)
