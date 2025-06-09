@@ -2,6 +2,7 @@
 #include "command/basic_command_handlers.h"
 #include "command/command_utilities.h"
 #include "../ipc/mcp_server.h"  // Include MCPServer definition
+#include "../utils/constants.h"
 
 void BasicCommandHandlers::RegisterHandlers(MCPServer& server) {
     // Register basic command handlers
@@ -43,7 +44,7 @@ json BasicCommandHandlers::GetMetadataHandler(const json& message) {
     // Try to execute basic WinDBG commands to gather metadata
     try {
         auto args = message.value("args", json::object());
-        unsigned int timeout = args.value("timeout_ms", 15000u); // 15 second default for metadata
+        unsigned int timeout = args.value("timeout_ms", Constants::ANALYSIS_TIMEOUT_MS); // Use analysis timeout for metadata
         
         targetInfo = CommandUtilities::ExecuteWinDbgCommand("!target", timeout);
         modules = CommandUtilities::ExecuteWinDbgCommand("lm", timeout);
@@ -81,7 +82,7 @@ json BasicCommandHandlers::GetMetadataHandler(const json& message) {
 json BasicCommandHandlers::ListModulesHandler(const json& message) {
     try {
         auto args = message.value("args", json::object());
-        unsigned int timeout = args.value("timeout_ms", 10000u);
+        unsigned int timeout = args.value("timeout_ms", Constants::BULK_TIMEOUT_MS); // Use bulk timeout for module listing
         
         // Maximum output size to prevent excessive memory usage (64KB)
         const size_t MAX_OUTPUT_SIZE = 65536;
@@ -114,7 +115,7 @@ json BasicCommandHandlers::DisplayTypeHandler(const json& message) {
         auto args = message.value("args", json::object());
         std::string typeName = args.value("type_name", "");
         std::string address = args.value("address", "");
-        unsigned int timeout = args.value("timeout_ms", 10000u);
+        unsigned int timeout = args.value("timeout_ms", Constants::ANALYSIS_TIMEOUT_MS); // Use analysis timeout for type display
         
         if (typeName.empty()) {
             return CommandUtilities::CreateErrorResponse(
@@ -150,7 +151,7 @@ json BasicCommandHandlers::DisplayMemoryHandler(const json& message) {
         auto args = message.value("args", json::object());
         std::string address = args.value("address", "");
         int length = args.value("length", 32);
-        unsigned int timeout = args.value("timeout_ms", 10000u);
+        unsigned int timeout = args.value("timeout_ms", Constants::SLOW_TIMEOUT_MS); // Use slow timeout for memory display
         
         if (address.empty()) {
             return CommandUtilities::CreateErrorResponse(

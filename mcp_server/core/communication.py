@@ -296,7 +296,7 @@ class ConnectionPool:
         self._queue_condition = threading.Condition(self._lock)
     
     @contextmanager
-    def get_connection(self, timeout_ms: int = 10000):
+    def get_connection(self, timeout_ms: int = DEFAULT_TIMEOUT_MS):
         """Context manager to get a connection from the pool."""
         start_time = time.time()
         connection = None

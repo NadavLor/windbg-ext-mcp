@@ -18,14 +18,14 @@ BUFFER_SIZE = 8192
 
 # Basic timeout settings (in milliseconds)
 DEFAULT_TIMEOUT_MS = 30000
-QUICK_COMMAND_TIMEOUT_MS = 5000
-LONG_COMMAND_TIMEOUT_MS = 60000
+QUICK_COMMAND_TIMEOUT_MS = 10000
+LONG_COMMAND_TIMEOUT_MS = 120000
 
 # Enhanced timeout settings for large operations
-BULK_OPERATION_TIMEOUT_MS = 120000  # 2 minutes for bulk operations
-LARGE_ANALYSIS_TIMEOUT_MS = 180000  # 3 minutes for large analysis
-PROCESS_LIST_TIMEOUT_MS = 300000    # 5 minutes for full process lists
-STREAMING_TIMEOUT_MS = 600000       # 10 minutes for streaming operations
+BULK_OPERATION_TIMEOUT_MS = 180000
+LARGE_ANALYSIS_TIMEOUT_MS = 300000
+PROCESS_LIST_TIMEOUT_MS = 480000
+STREAMING_TIMEOUT_MS = 900000
 
 # Retry configuration
 MAX_RETRY_ATTEMPTS = 3
@@ -95,17 +95,17 @@ class OptimizationLevel(Enum):
 @dataclass
 class TimeoutConfig:
     """Timeout configuration for different command types."""
-    quick: int = 5000      # Quick commands (version, help, etc.)
+    quick: int = 10000     # Quick commands (version, help, etc.)
     normal: int = 30000    # Normal commands
-    analysis: int = 60000  # Analysis commands
-    memory: int = 45000    # Memory operations
-    execution: int = 30000 # Execution control
-    bulk: int = 120000     # Bulk operations (module lists, etc.)
-    large_analysis: int = 180000  # Large analysis operations
-    process_list: int = 300000    # Full process enumeration
-    streaming: int = 600000       # Streaming operations
-    symbols: int = 180000         # Symbol operations (.reload, .sympath)
-    extended: int = 900000        # Extended operations (.reload /f, heavy symbol loading)
+    analysis: int = 120000 # Analysis commands
+    memory: int = 90000    # Memory operations
+    execution: int = 60000 # Execution control
+    bulk: int = 180000     # Bulk operations (module lists, etc.)
+    large_analysis: int = 300000  # Large analysis operations
+    process_list: int = 480000    # Full process enumeration
+    streaming: int = 900000       # Streaming operations
+    symbols: int = 300000         # Symbol operations (.reload, .sympath)
+    extended: int = 1200000        # Extended operations (.reload /f, heavy symbol loading)
 
 @dataclass
 class RetryConfig:

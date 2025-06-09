@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "../include/json.hpp"
+#include "../utils/constants.h"
 #include <string>
 #include <vector>
 #include <chrono>
@@ -55,13 +56,13 @@ public:
     // Core command execution
     
     /**
-     * @brief Execute a WinDbg command with timeout and error handling.
-     * @param command The command to execute.
+     * @brief Execute a WinDbg command with timeout.
+     * @param command Command to execute.
      * @param timeoutMs Timeout in milliseconds.
      * @return Command output as string.
      * @throws std::exception on execution failure.
      */
-    static std::string ExecuteWinDbgCommand(const std::string& command, unsigned int timeoutMs = 10000);
+    static std::string ExecuteWinDbgCommand(const std::string& command, unsigned int timeoutMs = Constants::DEFAULT_TIMEOUT_MS);
 
     // Response creation methods
     

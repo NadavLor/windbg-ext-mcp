@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "../include/json.hpp"
 #include "command_utilities.h"  // Include for ErrorCategory and TimeoutCategory enums
+#include "../utils/constants.h"
 #include <Windows.h>
 #include <DbgEng.h>
 #include <WDBGEXTS.H>
@@ -56,7 +57,7 @@ public:
     static json ForEachModuleHandler(const json& message);
     
     // Utility methods (delegate to CommandUtilities)
-    static std::string ExecuteWinDbgCommand(const std::string& command, unsigned int timeoutMs = 10000);
+    static std::string ExecuteWinDbgCommand(const std::string& command, unsigned int timeoutMs = Constants::DEFAULT_TIMEOUT_MS);
     
     // Response creation methods
     static json CreateSuccessResponse(int id, const std::string& command, const std::string& output);
