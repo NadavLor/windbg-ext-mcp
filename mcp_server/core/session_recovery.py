@@ -12,12 +12,13 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 from .communication import send_command, test_connection, CommunicationError, TimeoutError, ConnectionError
-from .connection_resilience import ConnectionState, VMState, execute_resilient_command
 from .unified_cache import (
     cache_session_snapshot, get_cached_session_snapshot, clear_session_cache
 )
+from config import get_timeout_for_command, DebuggingMode
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class RecoveryStrategy(Enum):
 @dataclass
 class SessionSnapshot:
     """Snapshot of debugging session state."""
-    timestamp: str
+    timestamp: float
     session_id: str
     debugging_mode: str  # kernel/user
     target_info: Dict[str, Any]
@@ -71,8 +72,10 @@ class RecoveryContext:
 class SessionRecovery:
     """Main class for session recovery and state management."""
     
-    def __init__(self, state_file: str = "windbg_session_state.json"):
+    def __init__(self, state_file: str = "windbg_session_state.json", snapshot_dir: Path = None):
         self.state_file = state_file
+        self.snapshot_dir = snapshot_dir or Path("session_snapshots")
+        self.snapshot_dir.mkdir(exist_ok=True)
         self.current_session: Optional[SessionSnapshot] = None
         self.session_state = SessionState.UNKNOWN
         self.recovery_context: Optional[RecoveryContext] = None
@@ -112,7 +115,7 @@ class SessionRecovery:
                 session_id = f"session_{int(time.time())}"
             
             snapshot = SessionSnapshot(
-                timestamp=datetime.now().isoformat(),
+                timestamp=time.time(),
                 session_id=session_id,
                 debugging_mode="unknown",
                 target_info={}
@@ -122,90 +125,115 @@ class SessionRecovery:
             
             # Detect debugging mode
             try:
-                success, result, _ = execute_resilient_command(".effmach", "quick")
-                if success:
-                    if any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
-                        snapshot.debugging_mode = "kernel"
-                    else:
-                        snapshot.debugging_mode = "user"
-            except:
+                result = send_command(".effmach", timeout_ms=get_timeout_for_command(".effmach"))
+                if any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+                    snapshot.debugging_mode = "kernel"
+                else:
+                    snapshot.debugging_mode = "user"
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to detect debugging mode: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error detecting debugging mode: {e}")
                 pass
             
             # Get target information
             try:
-                success, version_info, _ = execute_resilient_command("version", "quick")
-                if success:
-                    snapshot.target_info["version"] = version_info
-            except:
+                version_info = send_command("version", timeout_ms=get_timeout_for_command("version"))
+                snapshot.target_info["version"] = version_info
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get target version information: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting target information: {e}")
                 pass
             
             # Get current process context (if in kernel mode)
             if snapshot.debugging_mode == "kernel":
                 try:
-                    success, proc_info, _ = execute_resilient_command("!process -1 0", "normal")
-                    if success and "PROCESS" in proc_info:
+                    proc_info = send_command("!process -1 0", timeout_ms=get_timeout_for_command("!process -1 0"))
+                    if "PROCESS" in proc_info:
                         # Extract current process address
                         import re
                         match = re.search(r'PROCESS\s+([a-fA-F0-9`]+)', proc_info)
                         if match:
                             snapshot.current_process = match.group(1)
-                except:
+                except (CommunicationError, TimeoutError, ConnectionError) as e:
+                    logger.warning(f"Failed to get current process context: {e}")
+                    pass
+                except Exception as e:
+                    logger.error(f"Unexpected error getting process context: {e}")
                     pass
             
             # Get current thread context (kernel mode compatible)
             try:
                 # In kernel mode, use !thread to get current thread info instead of ~.
-                success, thread_info, _ = execute_resilient_command("!thread", "quick")
-                if success:
-                    import re
-                    # Look for THREAD pattern in kernel mode output
-                    match = re.search(r'THREAD\s+([0-9a-f]+)', thread_info)
-                    if match:
-                        snapshot.current_thread = match.group(1)
+                thread_info = send_command("!thread", timeout_ms=get_timeout_for_command("!thread"))
+                import re
+                # Look for THREAD pattern in kernel mode output
+                match = re.search(r'THREAD\s+([0-9a-f]+)', thread_info)
+                if match:
+                    snapshot.current_thread = match.group(1)
                 else:
                     # Fallback: try to get current processor info
-                    success, proc_info, _ = execute_resilient_command("!pcr", "quick")
-                    if success:
-                        snapshot.current_thread = "current_processor"
-            except:
+                    proc_info = send_command("!pcr", timeout_ms=get_timeout_for_command("!pcr"))
+                    snapshot.current_thread = "current_processor"
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get current thread context: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting thread context: {e}")
                 pass
             
             # Get call stack (limited)
             try:
-                success, stack_info, _ = execute_resilient_command("k 5", "normal")
-                if success:
-                    snapshot.call_stack = stack_info
-            except:
+                stack_info = send_command("k 5", timeout_ms=get_timeout_for_command("k 5"))
+                snapshot.call_stack = stack_info[:200] + "..." if len(stack_info) > 200 else stack_info
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get call stack: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting call stack: {e}")
                 pass
             
             # Get key registers
             try:
-                success, reg_info, _ = execute_resilient_command("r", "quick")
-                if success:
-                    snapshot.registers = {"summary": reg_info}
-            except:
+                reg_info = send_command("r", timeout_ms=get_timeout_for_command("r"))
+                snapshot.registers = {"summary": reg_info}
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get registers: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting registers: {e}")
                 pass
             
             # Get loaded modules (limited)
             try:
-                success, modules_info, _ = execute_resilient_command("lm", "normal")
-                if success:
-                    # Parse module information (simplified)
-                    module_lines = modules_info.split('\n')[:10]  # Limit to first 10 modules
-                    snapshot.modules = [{"info": line.strip()} for line in module_lines if line.strip()]
-            except:
+                modules_info = send_command("lm", timeout_ms=get_timeout_for_command("lm"))
+                # Parse module information (simplified)
+                module_lines = modules_info.split('\n')[:10]  # Limit to first 10 modules
+                snapshot.modules = [{"info": line.strip()} for line in module_lines if line.strip()]
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get loaded modules: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting modules: {e}")
                 pass
             
             # Get breakpoints
             try:
-                success, bp_info, _ = execute_resilient_command("bl", "quick")
-                if success and bp_info.strip():
+                bp_info = send_command("bl", timeout_ms=get_timeout_for_command("bl"))
+                if bp_info.strip():
                     # Parse breakpoint information
                     bp_lines = bp_info.split('\n')
                     for line in bp_lines:
                         if line.strip() and not line.startswith("No breakpoints"):
                             snapshot.breakpoints.append({"info": line.strip()})
-            except:
+            except (CommunicationError, TimeoutError, ConnectionError) as e:
+                logger.warning(f"Failed to get breakpoints: {e}")
+                pass
+            except Exception as e:
+                logger.error(f"Unexpected error getting breakpoints: {e}")
                 pass
             
             self.current_session = snapshot
@@ -237,23 +265,40 @@ class SessionRecovery:
                 return True, "Extension connection lost"
             
             # Test WinDbg responsiveness with kernel-compatible command
-            success, result, metadata = execute_resilient_command("version", "quick", max_retries=1)
-            if not success:
+            try:
+                result = send_command("version", timeout_ms=get_timeout_for_command("version"))
+            except Exception as e:
                 # Clear cache since WinDbg is unresponsive
                 clear_session_cache()
-                return True, f"WinDbg unresponsive: {result}"
+                return True, f"WinDbg unresponsive: {str(e)}"
             
-            # Check if target is still connected (for kernel debugging)
+            # Check if target is still connected (for kernel debugging) using non-intrusive command
             if self.current_session and self.current_session.debugging_mode == "kernel":
-                success, result, _ = execute_resilient_command(".reboot_target", "quick", max_retries=1)
-                if "Target rebooted" in result:
-                    # Clear cache since target rebooted (major state change)
+                try:
+                    # Use non-destructive command to check target connectivity
+                    result = send_command("!uptime", timeout_ms=get_timeout_for_command("!uptime"))
+                    if "uptime:" in result.lower() or "system up time" in result.lower():
+                        # Target is responsive and connected
+                        pass
+                    elif "target not connected" in result.lower() or "rpc/tcp error" in result.lower():
+                        # Clear cache since target disconnected
+                        clear_session_cache()
+                        return True, "Target VM disconnected"
+                    else:
+                        # Try alternative check with register dump
+                        result = send_command("r rip", timeout_ms=get_timeout_for_command("r rip"))
+                        if "bad register" in result.lower() or "target not connected" in result.lower():
+                            clear_session_cache()
+                            return True, "Target VM disconnected"
+                except (CommunicationError, TimeoutError, ConnectionError) as e:
+                    # Clear cache since target is unresponsive
                     clear_session_cache()
-                    return True, "Target VM rebooted"
-                elif "Target not connected" in result:
-                    # Clear cache since target disconnected
-                    clear_session_cache()
-                    return True, "Target VM disconnected"
+                    logger.warning(f"Target connectivity check failed: {e}")
+                    return True, f"Target VM connectivity lost: {str(e)}"
+                except Exception as e:
+                    # Log unexpected errors but don't assume disconnection
+                    logger.error(f"Unexpected error during target connectivity check: {e}")
+                    pass
             
             return False, "Session active"
             
@@ -296,10 +341,11 @@ class SessionRecovery:
             recovery_info["steps_completed"].append("connection_test_passed")
             
             # Step 2: Verify WinDbg is responsive
-            success, result, _ = execute_resilient_command("version", "quick")
-            if not success:
+            try:
+                result = send_command("version", timeout_ms=get_timeout_for_command("version"))
+            except Exception as e:
                 recovery_info["steps_completed"].append("windbg_unresponsive")
-                return False, f"WinDbg not responding: {result}", recovery_info
+                return False, f"WinDbg not responding: {str(e)}", recovery_info
             
             recovery_info["steps_completed"].append("windbg_responsive")
             
@@ -323,34 +369,26 @@ class SessionRecovery:
                 self.current_session.current_process):
                 
                 try:
-                    success, result, _ = execute_resilient_command(
-                        f".process /i {self.current_session.current_process}", "normal"
+                    result = send_command(
+                        f".process /i {self.current_session.current_process}", timeout_ms=get_timeout_for_command(".process /i {self.current_session.current_process}")
                     )
-                    if success:
-                        recovery_info["steps_completed"].append("process_context_restored")
-                    else:
-                        recovery_info["steps_completed"].append("process_context_failed")
-                        logger.warning(f"Failed to restore process context: {result}")
+                    recovery_info["steps_completed"].append("process_context_restored")
                 except Exception as e:
-                    recovery_info["steps_completed"].append("process_context_error")
-                    logger.warning(f"Error restoring process context: {e}")
+                    recovery_info["steps_completed"].append("process_context_failed")
+                    logger.warning(f"Failed to restore process context: {e}")
             
             # Step 5: Restore thread context
             if (strategy in [RecoveryStrategy.RESTORE_CONTEXT, RecoveryStrategy.FULL_RECOVERY] and 
                 self.current_session.current_thread):
                 
                 try:
-                    success, result, _ = execute_resilient_command(
-                        f"~{self.current_session.current_thread}s", "quick"
+                    result = send_command(
+                        f"~{self.current_session.current_thread}s", timeout_ms=get_timeout_for_command("~{self.current_session.current_thread}s")
                     )
-                    if success:
-                        recovery_info["steps_completed"].append("thread_context_restored")
-                    else:
-                        recovery_info["steps_completed"].append("thread_context_failed")
-                        logger.warning(f"Failed to restore thread context: {result}")
+                    recovery_info["steps_completed"].append("thread_context_restored")
                 except Exception as e:
-                    recovery_info["steps_completed"].append("thread_context_error")
-                    logger.warning(f"Error restoring thread context: {e}")
+                    recovery_info["steps_completed"].append("thread_context_failed")
+                    logger.warning(f"Failed to restore thread context: {e}")
             
             # Step 6: Restore breakpoints (full recovery)
             if (strategy == RecoveryStrategy.FULL_RECOVERY and 
@@ -524,8 +562,8 @@ class SessionRecovery:
     def _detect_current_mode(self) -> str:
         """Detect current debugging mode."""
         try:
-            success, result, _ = execute_resilient_command(".effmach", "quick")
-            if success and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+            result = send_command(".effmach", timeout_ms=get_timeout_for_command(".effmach"))
+            if any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
                 return "kernel"
             else:
                 return "user"
@@ -571,4 +609,5 @@ def load_previous_session() -> Optional[SessionSnapshot]:
     """Load previous session state from disk."""
     return session_recovery.load_session_state()
 
+# clear_session_cache is imported from unified_cache 
 # clear_session_cache is imported from unified_cache 

@@ -6,54 +6,12 @@ This module contains helper functions and utilities used across multiple tool fi
 import logging
 from typing import Dict, Any, List, Optional
 from core.communication import send_command
-from core.performance import execute_optimized_command
-from core.connection_resilience import execute_resilient_command
+# Execution functions are in the unified execution system
 from core.performance import OptimizationLevel
+from config import get_timeout_for_command, DebuggingMode
 
-logger = logging.getLogger(__name__)
-
-def categorize_command_timeout(command: str) -> str:
-    """
-    Categorize command for timeout optimization.
-    
-    Args:
-        command: The WinDbg command
-        
-    Returns:
-        Timeout category string
-    """
-    command_lower = command.lower().strip()
-    
-    if any(cmd in command_lower for cmd in ["version", "r", "?", ".effmach"]):
-        return "quick"
-    elif any(cmd in command_lower for cmd in ["!process 0 0", "!handle 0 f", "lm"]):
-        return "bulk"
-    elif any(cmd in command_lower for cmd in ["!analyze", "!poolfind", "!poolused"]):
-        return "analysis"
-    elif any(cmd in command_lower for cmd in ["k", "!thread", "!dlls"]):
-        return "slow"
-    else:
-        return "normal"
-
-def get_direct_timeout(command: str) -> int:
-    """
-    Get direct timeout for a command in milliseconds.
-    
-    Args:
-        command: The WinDbg command
-        
-    Returns:
-        Timeout in milliseconds
-    """
-    category = categorize_command_timeout(command)
-    timeouts = {
-        "quick": 5000,
-        "normal": 15000,
-        "slow": 30000,
-        "bulk": 60000,
-        "analysis": 120000
-    }
-    return timeouts.get(category, 15000)
+# Timeout functions have been moved to the unified execution system
+# Use core.execution.timeout_resolver directly
 
 def detect_kernel_mode() -> bool:
     """
@@ -63,13 +21,18 @@ def detect_kernel_mode() -> bool:
         True if kernel mode, False if user mode
     """
     try:
-        success, result, _ = execute_resilient_command(".effmach", "quick")
-        if success and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
+        from core.execution.timeout_resolver import resolve_timeout
+        from config import DebuggingMode
+        
+        timeout_ms = resolve_timeout(".effmach", DebuggingMode.VM_NETWORK)
+        result = send_command(".effmach", timeout_ms=timeout_ms)
+        if result and any(x in result.lower() for x in ["x64_kernel", "x86_kernel", "kernel mode"]):
             return True
         
         # Try alternative detection
-        success, result, _ = execute_resilient_command("!pcr", "quick")
-        if success and not result.startswith("Error:") and "is not a recognized" not in result:
+        timeout_ms = resolve_timeout("!pcr", DebuggingMode.VM_NETWORK)
+        result = send_command("!pcr", timeout_ms=timeout_ms)
+        if result and not result.startswith("Error:") and "is not a recognized" not in result:
             return True
         
         return False

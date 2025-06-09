@@ -15,8 +15,12 @@ from concurrent.futures import ThreadPoolExecutor
 from .compression import DataCompressor
 from .streaming import StreamingHandler
 from .command_optimizer import CommandOptimizer
-from ..connection_resilience import execute_resilient_command
-from ..unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
+from core.communication import send_command
+from core.unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
+from config import get_timeout_for_command, DebuggingMode
+
+# Import unified execution system
+from core.execution import execute_command as execute_unified
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +43,20 @@ class PerformanceMetrics:
     average_command_time: float = 0.0
     network_latency: float = 0.0
 
+# Commands that should bypass optimization and execute directly
+BYPASS_OPTIMIZATION_COMMANDS = {
+    ".reload /f", ".reload -f",  # Force reload needs direct execution
+    ".restart", ".reboot",       # System control commands
+    "g", "p", "t",              # Execution control commands  
+    "bp", "bc", "bd", "be",     # Breakpoint commands (state-changing)
+    ".attach", ".detach",       # Process attach/detach
+    ".symfix", ".sympath"       # Symbol path changes
+}
+
 class PerformanceOptimizer:
     """Main performance optimization coordinator."""
     
-    def __init__(self, optimization_level: OptimizationLevel = OptimizationLevel.AGGRESSIVE):
+    def __init__(self, optimization_level: OptimizationLevel = OptimizationLevel.NONE):
         self.optimization_level = optimization_level
         # Use unified cache instead of separate ResultCache
         self.compressor = DataCompressor()
@@ -54,125 +68,115 @@ class PerformanceOptimizer:
         # Thread pool for async operations
         self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="PerfOpt")
         
-    def execute_optimized_command(
-        self,
-        command: str,
-        timeout_category: str = "normal",
-        context: Dict[str, Any] = None,
-        force_fresh: bool = False
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """Execute command with all optimizations applied."""
-        start_time = time.time()
+    def should_bypass_optimization(self, command: str) -> bool:
+        """
+        Determine if a command should bypass optimization and execute directly.
         
-        # Update metrics
-        with self._lock:
-            self.metrics.total_commands += 1
-        
-        # Check cache first (unless forced fresh)
-        if not force_fresh and self.optimization_level != OptimizationLevel.NONE:
-            should_cache, ttl = self.command_optimizer.should_cache_command(command)
+        Args:
+            command: The command to check
             
-            if should_cache:
-                cached_result = get_cached_command_result(command)
-                if cached_result:
-                    with self._lock:
-                        self.metrics.cached_hits += 1
-                    
-                    # Decompress if needed
-                    if isinstance(cached_result, bytes) or (isinstance(cached_result, str) and len(cached_result) > 0 and ord(cached_result[0]) == 31):
-                        try:
-                            cached_result = self.compressor.decompress_text(cached_result, True)
-                        except:
-                            pass
-                    
-                    execution_time = time.time() - start_time
-                    metadata = {
-                        "cached": True,
-                        "response_time": execution_time,
-                        "cache_hit": True,
-                        "optimization_level": self.optimization_level.value
-                    }
-                    return True, cached_result, metadata
+        Returns:
+            True if command should bypass optimization
+        """
+        command_lower = command.lower().strip()
         
-        # Cache miss - execute command
-        with self._lock:
-            self.metrics.cache_miss += 1
+        # Check against bypass list
+        for bypass_cmd in BYPASS_OPTIMIZATION_COMMANDS:
+            if bypass_cmd in command_lower:
+                return True
         
-        # Execute with resilience
-        success, result, metadata = execute_resilient_command(command, timeout_category)
+        # Commands with parameters that affect state
+        if any(pattern in command_lower for pattern in [
+            ".process /i", ".thread", "~", ".context",  # Context switching
+            "ed ", "ew ", "eb ", "eq ",                  # Memory editing
+            "!process", "!thread"                       # Process/thread manipulation
+        ]):
+            return True
+            
+        return False
         
-        if success:
-            # Measure network transfer size
-            data_size = len(result.encode('utf-8'))
-            with self._lock:
-                self.metrics.total_bytes_transferred += data_size
+    # Use unified execution system for command execution
+    # Use core.execution.execute_command instead
+    
+    def _execute_direct_command(self, command: str, start_time: float) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Execute command directly without optimization.
+        
+        Args:
+            command: Command to execute
+            start_time: Start time for metrics
             
-            # Apply compression if beneficial
-            if self.optimization_level in [OptimizationLevel.AGGRESSIVE, OptimizationLevel.MAXIMUM]:
-                compressed_result, was_compressed = self.compressor.compress_text(result)
-                if was_compressed:
-                    compressed_size = len(compressed_result) if isinstance(compressed_result, bytes) else len(compressed_result.encode('utf-8'))
-                    with self._lock:
-                        self.metrics.compression_saves += 1
-                        self.metrics.total_bytes_saved += (data_size - compressed_size)
-            else:
-                compressed_result, was_compressed = result, False
+        Returns:
+            Tuple of (success, result, metadata)
+        """
+        try:
+            # Use centralized timeout configuration
+            timeout_ms = get_timeout_for_command(command, DebuggingMode.VM_NETWORK)
             
-            # Cache result if appropriate
-            if self.optimization_level != OptimizationLevel.NONE:
-                should_cache, ttl = self.command_optimizer.should_cache_command(command)
-                if should_cache:
-                    cache_command_result(command, compressed_result if was_compressed else result, ttl)
+            result = send_command(command, timeout_ms=timeout_ms)
+            success = True
             
-            # Update performance metrics
             execution_time = time.time() - start_time
-            with self._lock:
-                if self.metrics.average_command_time == 0:
-                    self.metrics.average_command_time = execution_time
-                else:
-                    # Exponential moving average
-                    alpha = 0.1
-                    self.metrics.average_command_time = (
-                        alpha * execution_time + (1 - alpha) * self.metrics.average_command_time
-                    )
-            
-            # Add optimization metadata
-            metadata.update({
+            metadata = {
                 "cached": False,
-                "compressed": was_compressed,
-                "original_size": data_size,
-                "optimization_level": self.optimization_level.value,
-                "cache_ttl": ttl if should_cache else 0
-            })
+                "compressed": False,
+                "optimization_bypassed": True,
+                "timeout_ms": timeout_ms,
+                "response_time": execution_time,
+                "optimization_level": "direct"
+            }
             
-            if was_compressed:
-                metadata["compressed_size"] = len(compressed_result) if isinstance(compressed_result, bytes) else len(compressed_result.encode('utf-8'))
-                metadata["compression_ratio"] = metadata["compressed_size"] / data_size
-        
-        return success, result, metadata
+            return success, result, metadata
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            metadata = {
+                "error": True,
+                "optimization_bypassed": True,
+                "timeout_ms": get_timeout_for_command(command, DebuggingMode.VM_NETWORK),
+                "response_time": execution_time,
+                "original_error": str(e)
+            }
+            return False, str(e), metadata
     
     def stream_large_command(self, command: str, timeout_category: str = "bulk") -> Generator[Dict[str, Any], None, None]:
         """Stream large command output with optimization."""
         if self.optimization_level == OptimizationLevel.NONE:
             # Fallback to regular execution
-            success, result, metadata = execute_resilient_command(command, timeout_category)
-            yield {
-                "type": "complete",
-                "data": result,
-                "metadata": metadata
-            }
+            try:
+                # Use centralized timeout configuration
+                timeout_ms = get_timeout_for_command(command, DebuggingMode.VM_NETWORK)
+                
+                result = send_command(command, timeout_ms=timeout_ms)
+                metadata = {"cached": False, "optimization": "none", "timeout_ms": timeout_ms}
+                yield {
+                    "type": "complete",
+                    "data": result,
+                    "metadata": metadata
+                }
+            except Exception as e:
+                yield {
+                    "type": "error",
+                    "message": str(e),
+                    "metadata": {"error": True, "timeout_ms": get_timeout_for_command(command, DebuggingMode.VM_NETWORK)}
+                }
         else:
             yield from self.streaming.stream_large_output(command, timeout_category)
     
     def execute_command_batch(self, commands: List[str]) -> Dict[str, Any]:
-        """Execute multiple commands with optimization."""
+        """Execute multiple commands with optimization using unified execution system."""
         if not commands:
             return {"results": [], "optimization": "empty_batch"}
         
         if len(commands) == 1:
-            success, result, metadata = self.execute_optimized_command(commands[0])
+            result = execute_unified(commands[0], resilient=True, optimize=True)
             return {
-                "results": [{"command": commands[0], "success": success, "result": result, "metadata": metadata}],
+                "results": [{
+                    "command": commands[0], 
+                    "success": result.success, 
+                    "result": result.result, 
+                    "metadata": result.to_dict()
+                }],
                 "optimization": "single_command"
             }
         
@@ -186,12 +190,12 @@ class PerformanceOptimizer:
             batch_start = time.time()
             
             for command in batch:
-                success, result, metadata = self.execute_optimized_command(command)
+                result = execute_unified(command, resilient=True, optimize=True)
                 results.append({
                     "command": command,
-                    "success": success, 
-                    "result": result,
-                    "metadata": metadata
+                    "success": result.success, 
+                    "result": result.result,
+                    "metadata": result.to_dict()
                 })
             
             batch_time = time.time() - batch_start

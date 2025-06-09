@@ -1,4 +1,5 @@
-﻿Microsoft Visual Studio Solution File, Format Version 12.00
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -12,8 +13,8 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x64.ActiveCfg = Debug|x64
-		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x64.Build.0 = Debug|x64
+		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x64.ActiveCfg = Release|x64
+		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x64.Build.0 = Release|x64
 		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x86.ActiveCfg = Debug|Win32
 		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Debug|x86.Build.0 = Debug|Win32
 		{154C4EE9-14A0-4D00-A34F-82AD8638AC2B}.Release|x64.ActiveCfg = Release|x64

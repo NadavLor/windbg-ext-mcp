@@ -1,63 +1,65 @@
 """
-Core communication module for WinDbg MCP Extension - Hybrid Architecture Edition.
+Core communication module for WinDbg MCP Extension.
 
-This module handles the low-level named pipe communication with the WinDbg extension,
-with enhanced connection resilience, retry logic, and network debugging optimizations.
-Supports both local and VM-based kernel debugging scenarios.
+This module provides all communication functionality including low-level protocols,
+connection management, error handling, and diagnostic capabilities.
 """
 import json
 import time
 import logging
-from typing import Dict, Any, Optional, Tuple
+import threading
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
+from dataclasses import dataclass
+from contextlib import contextmanager
+from enum import Enum
 import win32pipe
 import win32file
 import win32api
 import win32event
 import pywintypes
-import traceback
-import threading
-from dataclasses import dataclass
-from enum import Enum
 
-# Import centralized configuration and retry utilities
-from config import (
-    PIPE_NAME, BUFFER_SIZE, DEFAULT_TIMEOUT_MS, MAX_RETRY_ATTEMPTS,
-    RETRY_DELAY_MS, CONNECTION_HEALTH_CHECK_INTERVAL, 
-    NETWORK_DEBUGGING_TIMEOUT_MULTIPLIER, DebuggingMode,
-    get_timeout_for_command, get_retry_delay
-)
-from .retry_utils import resilient_command, RetryableError, NonRetryableError
-from .unified_cache import (
-    start_startup_cache, stop_startup_cache, 
-    cache_startup_command, get_startup_cached_result
-)
+from config import PIPE_NAME, BUFFER_SIZE, DEFAULT_TIMEOUT_MS, DebuggingMode, get_timeout_for_command
 
 logger = logging.getLogger(__name__)
 
-# Remove old startup cache implementation - now using unified cache
 
-# These functions are now imported from unified_cache:
-# - start_startup_cache()
-# - stop_startup_cache() 
-# - cache_startup_command()
-# - get_startup_cached_result()
-
+# Exception Classes
 class CommunicationError(Exception):
     """Base exception for communication errors."""
     pass
 
-class TimeoutError(CommunicationError):
+
+class PipeTimeoutError(CommunicationError):
     """Raised when a command times out."""
     pass
+
+
+# Backward compatibility alias
+TimeoutError = PipeTimeoutError
+
 
 class ConnectionError(CommunicationError):
     """Raised when connection to WinDbg extension fails."""
     pass
 
+
 class NetworkDebuggingError(CommunicationError):
     """Raised when network debugging connection issues are detected."""
     pass
+
+
+# Data Classes
+@dataclass
+class ConnectionHandle:
+    """Represents a connection handle with metadata."""
+    handle: Any
+    created_at: datetime
+    last_used: datetime
+    in_use: bool = False
+    use_count: int = 0
+    thread_id: int = 0
+
 
 @dataclass
 class ConnectionHealth:
@@ -65,162 +67,142 @@ class ConnectionHealth:
     is_connected: bool
     last_successful_command: Optional[datetime]
     consecutive_failures: int
-    network_debugging_mode: DebuggingMode
     target_responsive: bool
     extension_responsive: bool
     last_error: Optional[str]
 
-class CommunicationManager:
-    """
-    Enhanced communication manager with connection resilience and hybrid architecture support.
+
+# Low-level Protocol Classes
+class NamedPipeProtocol:
+    """Handles low-level named pipe communication protocol."""
     
-    This manager handles:
-    - Named pipe communication with WinDbg extension
-    - Connection health monitoring (MINIMAL MODE - see note below)
-    - Retry logic for network debugging scenarios
-    - Timeout optimization based on debugging mode
-    
-    NOTE: Health monitoring has been made minimal to prevent overwhelming
-    the WinDbg extension with frequent "version" commands that can cause crashes.
-    Actual health checks are only performed when explicitly requested via 
-    test_connection() calls.
-    """
-    
-    def __init__(self):
-        self._connection_health = ConnectionHealth(
-            is_connected=True,  # Assume connected by default since tests will verify
-            last_successful_command=None,
-            consecutive_failures=0,
-            network_debugging_mode=DebuggingMode.LOCAL,
-            target_responsive=True,  # Keep as True by default
-            extension_responsive=True,  # Set to True by default since tests verify
-            last_error=None
-        )
-        self._health_lock = threading.Lock()
-        self._monitoring_thread = None
-        self._monitoring_active = False
-        
-    def set_debugging_mode(self, mode: DebuggingMode):
-        """Set the debugging mode for timeout and retry optimization."""
-        with self._health_lock:
-            self._connection_health.network_debugging_mode = mode
-            logger.info(f"Set debugging mode to: {mode.value}")
-    
-    def get_connection_health(self) -> ConnectionHealth:
-        """Get the current connection health status."""
-        with self._health_lock:
-            return self._connection_health
-    
-    def start_health_monitoring(self):
-        """Start background health monitoring - now minimal and non-aggressive."""
-        if self._monitoring_active:
-            return
-            
-        # For now, don't start aggressive monitoring to prevent extension crashes
-        # Just set monitoring flag and update health flags to reflect reality
-        self._monitoring_active = True
-        
-        # Update health flags to reflect that if we can start monitoring, things are working
-        with self._health_lock:
-            self._connection_health.extension_responsive = True
-            self._connection_health.target_responsive = True
-            self._connection_health.is_connected = True
-            
-        logger.info("Health monitoring enabled (minimal mode)")
-    
-    def stop_health_monitoring(self):
-        """Stop background health monitoring."""
-        self._monitoring_active = False
-        if self._monitoring_thread and self._monitoring_thread.is_alive():
-            self._monitoring_thread.join(timeout=5)
-        # Don't log during shutdown to avoid I/O errors with closed streams
-        try:
-            logger.info("Stopped connection health monitoring")
-        except:
-            pass  # Silently ignore if streams are closed
-    
-    def _health_monitor_loop(self):
-        """Background health monitoring loop - minimal implementation."""
-        # This loop is now disabled to prevent crashing the WinDbg extension
-        # Health monitoring is done manually via test_connection() calls only
-        while self._monitoring_active:
-            try:
-                # Just update basic health flags without doing actual tests
-                with self._health_lock:
-                    self._connection_health.extension_responsive = True
-                    self._connection_health.target_responsive = True
-                    self._connection_health.is_connected = True
-                
-                # Much longer sleep to minimize any impact
-                time.sleep(300)  # 5 minutes instead of 30 seconds
-                
-            except Exception as e:
-                logger.warning(f"Health monitor error: {e}")
-                time.sleep(300)
-    
-    def _test_extension_health(self) -> bool:
-        """Test if the WinDbg extension is responsive - minimal implementation."""
-        # Always return True for now to avoid aggressive testing that crashes extension
-        # Real health can be checked via manual test_connection() calls
-        return True
-    
-    def _test_target_health(self) -> bool:
-        """Test if the debugging target is responsive - minimal implementation."""
-        # Always return True for now to avoid aggressive testing that crashes extension
-        # Real target health can be checked via manual test calls
-        return True
-    
-    @resilient_command
-    def send_command(self, command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
+    @staticmethod
+    def connect_to_pipe(pipe_name: str, timeout_ms: int) -> Any:
         """
-        Send a command to the WinDbg extension with resilience and retry logic.
+        Connect to the WinDbg extension named pipe.
         
         Args:
-            command: The WinDbg command to execute
-            timeout_ms: Timeout in milliseconds
+            pipe_name: Name of the pipe to connect to
+            timeout_ms: Connection timeout in milliseconds
             
         Returns:
-            The command output as a string
+            Handle to the connected pipe
             
         Raises:
-            ConnectionError: If connection to the extension fails
-            TimeoutError: If the command times out
-            NetworkDebuggingError: If network debugging issues are detected
-            CommunicationError: If the command fails
+            ConnectionError: If connection fails
         """
-        # Optimize timeout for debugging mode
-        optimized_timeout = self._optimize_timeout(command, timeout_ms)
-        
-        result = self._send_command_internal(command, optimized_timeout)
-        
-        # Update health on success
-        with self._health_lock:
-            self._connection_health.last_successful_command = datetime.now()
-            self._connection_health.consecutive_failures = 0
-            self._connection_health.last_error = None
-            # If command succeeded, extension and target are clearly responsive
-            self._connection_health.extension_responsive = True
-            self._connection_health.target_responsive = True
-            self._connection_health.is_connected = True
-        
-        return result
-
-    def _optimize_timeout(self, command: str, base_timeout_ms: int) -> int:
-        """Optimize timeout based on debugging mode and command type."""
-        with self._health_lock:
-            mode = self._connection_health.network_debugging_mode
-        
-        # Apply network debugging multiplier for VM scenarios
-        if mode in [DebuggingMode.VM_NETWORK, DebuggingMode.VM_SERIAL]:
-            return int(base_timeout_ms * NETWORK_DEBUGGING_TIMEOUT_MULTIPLIER)
-        
-        return base_timeout_ms
+        try:
+            handle = win32file.CreateFile(
+                pipe_name,
+                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                0,
+                None,
+                win32file.OPEN_EXISTING,
+                0,
+                None
+            )
+            logger.debug(f"Connected to pipe: {pipe_name}")
+            return handle
+            
+        except pywintypes.error as e:
+            error_code = e.args[0]
+            
+            if error_code == 2:  # ERROR_FILE_NOT_FOUND
+                raise ConnectionError("WinDbg extension not found. Make sure the extension is loaded in WinDbg.")
+            elif error_code == 231:  # ERROR_PIPE_BUSY
+                # Wait for pipe to become available
+                start_time = time.time()
+                while (time.time() - start_time) * 1000 < timeout_ms:
+                    if win32pipe.WaitNamedPipe(pipe_name, min(5000, timeout_ms)):
+                        try:
+                            handle = win32file.CreateFile(
+                                pipe_name,
+                                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                                0,
+                                None,
+                                win32file.OPEN_EXISTING,
+                                0,
+                                None
+                            )
+                            logger.debug(f"Connected to pipe after waiting: {pipe_name}")
+                            return handle
+                        except pywintypes.error as retry_error:
+                            if retry_error.args[0] != 231:
+                                raise ConnectionError(f"Failed to connect after wait: {str(retry_error)}")
+                            time.sleep(0.1)
+                    else:
+                        time.sleep(0.1)
+                
+                raise ConnectionError("WinDbg extension is busy and timeout exceeded.")
+            else:
+                raise ConnectionError(f"Failed to connect to WinDbg extension: {str(e)}")
     
-    def _send_command_internal(self, command: str, timeout_ms: int) -> str:
-        """Internal command sending with enhanced error detection."""
-        logger.debug(f"Sending command: {command}")
+    @staticmethod
+    def write_to_pipe(handle: Any, data: bytes, timeout_ms: int):
+        """Write data to the pipe."""
+        try:
+            win32file.WriteFile(handle, data)
+            logger.debug(f"Successfully wrote {len(data)} bytes to pipe")
+        except pywintypes.error as e:
+            raise ConnectionError(f"Failed to write to pipe: {str(e)}")
+    
+    @staticmethod
+    def read_from_pipe(handle: Any, timeout_ms: int) -> bytes:
+        """Read response from the pipe."""
+        start_time = datetime.now()
+        response_data = b''
         
-        message = {
+        while True:
+            elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            if elapsed_ms > timeout_ms:
+                raise TimeoutError(f"Read operation timed out after {elapsed_ms}ms")
+            
+            try:
+                hr, data = win32file.ReadFile(handle, BUFFER_SIZE)
+                
+                if data:
+                    response_data += data
+                    logger.debug(f"Read {len(data)} bytes, total: {len(response_data)} bytes")
+                    
+                    if response_data.endswith(b'\n'):
+                        logger.debug("Found complete response")
+                        break
+                else:
+                    time.sleep(0.01)
+                    
+            except pywintypes.error as e:
+                error_code = e.args[0]
+                if error_code == 109:  # ERROR_BROKEN_PIPE
+                    if response_data:
+                        logger.warning("Pipe broken but have partial data, using it")
+                        break
+                    raise ConnectionError("Pipe connection broken")
+                elif error_code == 232:  # ERROR_NO_DATA
+                    time.sleep(0.01)
+                    continue
+                else:
+                    raise ConnectionError(f"Failed to read from pipe: {str(e)}")
+        
+        logger.debug(f"Successfully read complete response: {len(response_data)} bytes")
+        return response_data
+    
+    @staticmethod
+    def close_pipe(handle: Any):
+        """Safely close a pipe handle."""
+        if handle:
+            try:
+                win32file.CloseHandle(handle)
+            except Exception as e:
+                logger.warning(f"Error closing pipe handle: {e}")
+
+
+class MessageProtocol:
+    """Handles message-level protocol for MCP communication."""
+    
+    @staticmethod
+    def create_command_message(command: str, timeout_ms: int) -> Dict[str, Any]:
+        """Create a command message for the WinDbg extension."""
+        return {
             "type": "command",
             "command": "execute_command",
             "id": int(time.time() * 1000),
@@ -229,401 +211,443 @@ class CommunicationManager:
                 "timeout_ms": timeout_ms
             }
         }
+    
+    @staticmethod
+    def create_handler_message(handler_name: str, **kwargs) -> Dict[str, Any]:
+        """Create a direct handler message for the WinDbg extension."""
+        message = {
+            "type": "command",
+            "command": handler_name,
+            "id": int(time.time() * 1000)
+        }
+        
+        if kwargs:
+            message["args"] = kwargs
+            
+        return message
+    
+    @staticmethod
+    def serialize_message(message: Dict[str, Any]) -> bytes:
+        """Serialize a message to bytes for transmission."""
+        try:
+            message_str = json.dumps(message) + "\n"
+            return message_str.encode('utf-8')
+        except (TypeError, ValueError) as e:
+            raise CommunicationError(f"Failed to serialize message: {e}")
+    
+    @staticmethod
+    def parse_response(response_data: bytes) -> Dict[str, Any]:
+        """Parse the response data from the extension."""
+        try:
+            response_str = response_data.decode('utf-8').strip()
+            return json.loads(response_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse response: {e}")
+            logger.debug(f"Raw response: {response_data!r}")
+            raise CommunicationError(f"Invalid response from WinDbg extension")
+        except UnicodeDecodeError as e:
+            logger.error(f"Failed to decode response: {e}")
+            raise CommunicationError(f"Invalid response encoding from WinDbg extension")
+    
+    @staticmethod
+    def validate_response(response: Dict[str, Any]) -> bool:
+        """Validate that a response message has the expected structure."""
+        try:
+            if "status" not in response:
+                return False
+            
+            status = response.get("status")
+            if status not in ["success", "error"]:
+                return False
+            
+            if status == "error" and "error" not in response:
+                return False
+            
+            if status == "success" and "output" not in response:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
+    @staticmethod
+    def detect_network_debugging_error(error_message: str) -> bool:
+        """Detect if an error message indicates network debugging issues."""
+        network_error_indicators = [
+            "retry sending", "transport connection", "lost", "network",
+            "target windows seems lost", "resync with target"
+        ]
+        
+        return any(phrase in error_message.lower() for phrase in network_error_indicators)
+
+
+# Connection Pool Management
+class ConnectionPool:
+    """Thread-safe connection pool for named pipe connections."""
+    
+    def __init__(self, max_connections: int = 3):
+        self._max_connections = max_connections
+        self._connections: List[ConnectionHandle] = []
+        self._lock = threading.RLock()
+        self._pipe_name = PIPE_NAME
+        self._active_requests = 0
+        self._max_concurrent_requests = 10
+        self._queue_condition = threading.Condition(self._lock)
+    
+    @contextmanager
+    def get_connection(self, timeout_ms: int = 10000):
+        """Context manager to get a connection from the pool."""
+        start_time = time.time()
+        connection = None
+        
+        with self._lock:
+            if self._active_requests >= self._max_concurrent_requests:
+                while self._active_requests >= self._max_concurrent_requests:
+                    elapsed = (time.time() - start_time) * 1000
+                    if elapsed > timeout_ms:
+                        raise TimeoutError(f"Request timed out in queue after {elapsed:.0f}ms")
+                    
+                    wait_time = min(0.1, (timeout_ms - elapsed) / 1000)
+                    if not self._queue_condition.wait(wait_time):
+                        continue
+            
+            self._active_requests += 1
+        
+        try:
+            connection = self._acquire_connection(timeout_ms)
+            yield connection.handle
+        finally:
+            if connection:
+                self._release_connection(connection)
+            
+            with self._lock:
+                self._active_requests -= 1
+                self._queue_condition.notify_all()
+    
+    def _acquire_connection(self, timeout_ms: int) -> ConnectionHandle:
+        """Acquire a connection from the pool."""
+        current_thread = threading.get_ident()
+        
+        with self._lock:
+            for conn in self._connections:
+                if not conn.in_use:
+                    conn.in_use = True
+                    conn.last_used = datetime.now()
+                    conn.use_count += 1
+                    conn.thread_id = current_thread
+                    logger.debug(f"Reusing connection (use count: {conn.use_count})")
+                    return conn
+            
+            if len(self._connections) < self._max_connections:
+                try:
+                    handle = NamedPipeProtocol.connect_to_pipe(self._pipe_name, timeout_ms)
+                    connection = ConnectionHandle(
+                        handle=handle,
+                        created_at=datetime.now(),
+                        last_used=datetime.now(),
+                        in_use=True,
+                        use_count=1,
+                        thread_id=current_thread
+                    )
+                    self._connections.append(connection)
+                    logger.debug(f"Created new connection (total: {len(self._connections)})")
+                    return connection
+                except Exception as e:
+                    logger.error(f"Failed to create connection: {e}")
+                    raise ConnectionError(f"Unable to create connection: {e}")
+            
+            # Create temporary connection for high concurrency
+            logger.debug("Creating temporary connection for high concurrency")
+            try:
+                handle = NamedPipeProtocol.connect_to_pipe(self._pipe_name, timeout_ms)
+                return ConnectionHandle(
+                    handle=handle,
+                    created_at=datetime.now(),
+                    last_used=datetime.now(),
+                    in_use=True,
+                    use_count=1,
+                    thread_id=current_thread
+                )
+            except Exception as e:
+                raise ConnectionError(f"Unable to acquire connection: {e}")
+    
+    def _release_connection(self, connection: ConnectionHandle):
+        """Release connection back to pool."""
+        with self._lock:
+            connection.in_use = False
+            connection.last_used = datetime.now()
+            connection.thread_id = 0
+            
+            if connection not in self._connections:
+                try:
+                    NamedPipeProtocol.close_pipe(connection.handle)
+                    logger.debug("Closed temporary connection")
+                except Exception as e:
+                    logger.warning(f"Error closing temporary connection: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get connection pool statistics."""
+        with self._lock:
+            return {
+                "total_connections": len(self._connections),
+                "active_connections": sum(1 for conn in self._connections if conn.in_use),
+                "active_requests": self._active_requests,
+                "max_connections": self._max_connections
+            }
+
+
+# High-level Communication Manager
+class CommunicationManager:
+    """Main communication manager for WinDbg extension interaction."""
+    
+    def __init__(self):
+        self._connection_health = ConnectionHealth(
+            is_connected=True,
+            last_successful_command=None,
+            consecutive_failures=0,
+            target_responsive=True,
+            extension_responsive=True,
+            last_error=None
+        )
+        self._health_lock = threading.Lock()
+        self._connection_pool = ConnectionPool()
+    
+    def send_command(self, command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
+        """Send a command to the WinDbg extension."""
+        logger.debug(f"Sending command: {command}")
+        
+        message = MessageProtocol.create_command_message(command, timeout_ms)
         
         try:
             response = self._send_message(message, timeout_ms)
             
-            # Handle error responses
+            if not MessageProtocol.validate_response(response):
+                raise CommunicationError("Invalid response structure from WinDbg extension")
+            
             if response.get("status") == "error":
                 error_message = response.get("error", "Unknown error")
-                suggestion = response.get("suggestion", "")
                 
-                # Detect network debugging issues
-                if any(phrase in error_message.lower() for phrase in [
-                    "retry sending", "transport connection", "lost", "network",
-                    "target windows seems lost", "resync with target"
-                ]):
+                if MessageProtocol.detect_network_debugging_error(error_message):
                     raise NetworkDebuggingError(f"Network debugging connection issue: {error_message}")
                 
-                formatted_error = f"WinDbg command failed: {error_message}"
-                if suggestion:
-                    formatted_error += f"\nSuggestion: {suggestion}"
-                    
-                raise CommunicationError(formatted_error)
+                raise CommunicationError(f"WinDbg command failed: {error_message}")
                 
-            # Return the output
-            output = response.get("output", "")
-            if output is None:
-                return "No output returned from command"
-                
-            return output
+            self._update_health_on_success()
+            return response.get("output", "")
             
-        except TimeoutError:
-            raise TimeoutError(f"Command '{command}' timed out after {timeout_ms}ms")
-        except ConnectionError:
-            raise ConnectionError(f"Failed to connect to WinDbg extension")
-        except NetworkDebuggingError:
-            raise  # Re-raise network debugging errors
+        except (TimeoutError, ConnectionError, NetworkDebuggingError):
+            self._update_health_on_failure(f"Command '{command}' failed")
+            raise
         except Exception as e:
+            self._update_health_on_failure(str(e))
             logger.error(f"Unexpected error executing command '{command}': {e}")
             raise CommunicationError(f"Error executing command: {str(e)}")
-
-    def _send_message(self, message: Dict[str, Any], timeout_ms: int) -> Dict[str, Any]:
-        """
-        Send a message to the WinDbg extension via named pipe.
+    
+    def send_handler_command(self, handler_name: str, timeout_ms: int = DEFAULT_TIMEOUT_MS, **kwargs) -> Dict[str, Any]:
+        """Send a direct handler command to the WinDbg extension."""
+        logger.debug(f"Sending handler command: {handler_name}")
         
-        Args:
-            message: The message to send
-            timeout_ms: Timeout in milliseconds
-            
-        Returns:
-            The response from the extension
-            
-        Raises:
-            ConnectionError: If connection fails
-            TimeoutError: If the operation times out
-            CommunicationError: If the operation fails
-        """
-        start_time = datetime.now()
-        handle = None
+        message = MessageProtocol.create_handler_message(handler_name, **kwargs)
         
         try:
-            # Convert message to JSON
-            message_str = json.dumps(message) + "\n"
-            message_bytes = message_str.encode('utf-8')
+            response = self._send_message(message, timeout_ms)
             
-            logger.debug(f"Sending {len(message_bytes)} bytes to pipe")
+            if not isinstance(response, dict):
+                raise CommunicationError("Invalid response structure from WinDbg extension handler")
             
-            # Connect to the named pipe
-            handle = _connect_to_pipe(timeout_ms)
+            if response.get("type") == "error":
+                error_message = response.get("error_message", "Unknown error")
+                raise CommunicationError(f"Handler '{handler_name}' failed: {error_message}")
+                
+            self._update_health_on_success()
+            return response
             
-            # Send the message
-            _write_to_pipe(handle, message_bytes, timeout_ms)
-            
-            # Read the response
-            response_data = _read_from_pipe(handle, timeout_ms)
-            
-            # Parse and return the response
-            return _parse_response(response_data)
-            
-        finally:
-            if handle:
-                try:
-                    win32file.CloseHandle(handle)
-                except:
-                    pass
-
-# Global communication manager instance
-_communication_manager = None
-
-def get_communication_manager() -> CommunicationManager:
-    """Get the global communication manager instance."""
-    global _communication_manager
-    if _communication_manager is None:
-        _communication_manager = CommunicationManager()
-    return _communication_manager
-
-def set_debugging_mode(mode: DebuggingMode):
-    """
-    Set the debugging mode for connection optimization.
+        except (TimeoutError, ConnectionError):
+            self._update_health_on_failure(f"Handler '{handler_name}' failed")
+            raise
+        except Exception as e:
+            self._update_health_on_failure(str(e))
+            logger.error(f"Unexpected error executing handler '{handler_name}': {e}")
+            raise CommunicationError(f"Error executing handler: {str(e)}")
     
-    Args:
-        mode: Debugging mode ("local", "vm_network", "vm_serial", "remote")
-    """
-    manager = get_communication_manager()
-    manager.set_debugging_mode(mode)
-
-def start_connection_monitoring():
-    """Start background connection health monitoring."""
-    manager = get_communication_manager()
-    manager.start_health_monitoring()
-
-def stop_connection_monitoring():
-    """Stop background connection health monitoring."""
-    manager = get_communication_manager()
-    manager.stop_health_monitoring()
-
-def get_connection_health() -> Dict[str, Any]:
-    """
-    Get current connection health status.
-    
-    Returns:
-        Dictionary containing health information
-    """
-    manager = get_communication_manager()
-    health = manager.get_connection_health()
-    
-    return {
-        "is_connected": health.is_connected,
-        "last_successful_command": health.last_successful_command.isoformat() if health.last_successful_command else None,
-        "consecutive_failures": health.consecutive_failures,
-        "debugging_mode": health.network_debugging_mode.value,
-        "target_responsive": health.target_responsive,
-        "extension_responsive": health.extension_responsive,
-        "last_error": health.last_error
-    }
-
-def _connect_to_pipe(timeout_ms: int):
-    """Connect to the WinDbg extension named pipe using synchronous I/O."""
-    try:
-        handle = win32file.CreateFile(
-            PIPE_NAME,
-            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-            0,
-            None,
-            win32file.OPEN_EXISTING,
-            0,  # Synchronous I/O for reliable communication
-            None
-        )
-        logger.debug(f"Connected to pipe: {PIPE_NAME}")
-        return handle
-        
-    except pywintypes.error as e:
-        error_code = e.args[0]
-        
-        if error_code == 2:  # ERROR_FILE_NOT_FOUND
-            raise ConnectionError("WinDbg extension not found. Make sure the extension is loaded in WinDbg.")
-        elif error_code == 231:  # ERROR_PIPE_BUSY
-            # Wait for pipe to become available
-            if win32pipe.WaitNamedPipe(PIPE_NAME, 5000):
-                return _connect_to_pipe(timeout_ms)  # Retry once
-            else:
-                raise ConnectionError("WinDbg extension is busy. Try again later.")
-        else:
-            raise ConnectionError(f"Failed to connect to WinDbg extension: {str(e)}")
-
-def _write_to_pipe(handle, data: bytes, timeout_ms: int):
-    """Write data to the pipe using synchronous I/O."""
-    try:
-        win32file.WriteFile(handle, data)
-        logger.debug(f"Successfully wrote {len(data)} bytes to pipe")
-            
-    except pywintypes.error as e:
-        raise ConnectionError(f"Failed to write to pipe: {str(e)}")
-
-def _read_from_pipe(handle, timeout_ms: int) -> bytes:
-    """Read response from the pipe using synchronous I/O."""
-    start_time = datetime.now()
-    response_data = b''
-    
-    while True:
-        # Check timeout
-        elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-        if elapsed_ms > timeout_ms:
-            raise TimeoutError(f"Read operation timed out after {elapsed_ms}ms")
-        
+    def test_connection(self) -> bool:
+        """Test if the connection to the WinDbg extension is working."""
         try:
-            # Read data using synchronous I/O (like the working debug test)
-            hr, data = win32file.ReadFile(handle, BUFFER_SIZE)
+            result = self.send_handler_command("version", timeout_ms=get_timeout_for_command("version"))
+            extension_responsive = bool(result.get("status") == "success")
             
-            if data:
-                response_data += data
-                logger.debug(f"Read {len(data)} bytes, total: {len(response_data)} bytes")
-                
-                # Check if response is complete (ends with newline)
-                if response_data.endswith(b'\n'):
-                    logger.debug("Found complete response (ends with newline)")
-                    break
+            with self._health_lock:
+                self._connection_health.extension_responsive = extension_responsive
+                self._connection_health.is_connected = extension_responsive
+                if extension_responsive:
+                    self._connection_health.last_successful_command = datetime.now()
+                    self._connection_health.consecutive_failures = 0
+                    self._connection_health.last_error = None
+                else:
+                    self._connection_health.consecutive_failures += 1
+            
+            return extension_responsive
+            
+        except NetworkDebuggingError:
+            logger.debug("Network debugging error during connection test - assuming connected")
+            with self._health_lock:
+                self._connection_health.extension_responsive = True
+                self._connection_health.is_connected = True
+                self._connection_health.last_successful_command = datetime.now()
+                self._connection_health.consecutive_failures = 0
+                self._connection_health.last_error = None
+            return True
+        except Exception as e:
+            logger.debug(f"Connection test failed: {e}")
+            with self._health_lock:
+                self._connection_health.extension_responsive = False
+                self._connection_health.is_connected = False
+                self._connection_health.consecutive_failures += 1
+                self._connection_health.last_error = str(e)
+            return False
+    
+    def test_target_connection(self) -> Tuple[bool, str]:
+        """Test if the debugging target is responsive."""
+        try:
+            result = self.send_command("version", timeout_ms=get_timeout_for_command("version"))
+            target_responsive = bool(result and not result.startswith("Error:"))
+            
+            with self._health_lock:
+                self._connection_health.target_responsive = target_responsive
+            
+            if target_responsive:
+                if "kernel" in result.lower():
+                    return True, "Kernel debugging target connected"
+                elif "user" in result.lower() or "process" in result.lower():
+                    return True, "User-mode debugging target connected"
+                else:
+                    return True, "Debugging target connected"
             else:
-                # No more data available, but wait a bit for more
-                time.sleep(0.01)
+                return False, "No response from debugging target"
                 
-        except pywintypes.error as e:
-            error_code = e.args[0]
-            if error_code == 109:  # ERROR_BROKEN_PIPE
-                if response_data:
-                    logger.warning("Pipe broken but have partial data, using it")
-                    break  # Use partial data
-                raise ConnectionError("Pipe connection broken")
-            elif error_code == 232:  # ERROR_NO_DATA
-                # No data available yet, wait and retry
-                time.sleep(0.01)
-                continue
-            else:
-                raise ConnectionError(f"Failed to read from pipe: {str(e)}")
+        except NetworkDebuggingError as e:
+            with self._health_lock:
+                self._connection_health.target_responsive = False
+            return False, f"Network debugging issue: {str(e)}"
+        except Exception as e:
+            with self._health_lock:
+                self._connection_health.target_responsive = False
+            return False, f"Target test failed: {str(e)}"
     
-    logger.debug(f"Successfully read complete response: {len(response_data)} bytes")
-    return response_data
-
-def _parse_response(response_data: bytes) -> Dict[str, Any]:
-    """Parse the response data from the extension."""
-    try:
-        response_str = response_data.decode('utf-8').strip()
-        return json.loads(response_str)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse response: {e}")
-        logger.debug(f"Raw response: {response_data!r}")
-        raise CommunicationError(f"Invalid response from WinDbg extension")
-    except UnicodeDecodeError as e:
-        logger.error(f"Failed to decode response: {e}")
-        raise CommunicationError(f"Invalid response encoding from WinDbg extension")
-
-def test_connection() -> bool:
-    """
-    Test if the connection to the WinDbg extension is working.
-    
-    This uses a safe, minimal approach to avoid overwhelming the extension.
-    
-    Returns:
-        True if connection is working, False otherwise
-    """
-    try:
-        # Check startup cache first to avoid redundant calls
-        cached_result = get_startup_cached_result("version")
-        if cached_result is not None:
-            logger.debug("Using cached version result for connection test")
-            is_connected = bool(cached_result and len(cached_result) > 10 and not cached_result.startswith("Error:"))
-        else:
-            # Use a very simple and short timeout test to minimize extension load
-            manager = get_communication_manager()
-            result = manager._send_command_internal("version", timeout_ms=3000)
-            is_connected = bool(result and len(result) > 10 and not result.startswith("Error:"))
-            
-            # Cache the result during startup
-            cache_startup_command("version", result)
-        
-        # Update health flags regardless of result to maintain consistent state
-        manager = get_communication_manager()
-        with manager._health_lock:
-            manager._connection_health.extension_responsive = is_connected
-            manager._connection_health.target_responsive = is_connected
-            manager._connection_health.is_connected = is_connected
-            if is_connected:
-                manager._connection_health.last_successful_command = datetime.now()
-                manager._connection_health.consecutive_failures = 0
-        
-        # Also update the connection resilience state
-        if is_connected:
-            try:
-                from .connection_resilience import connection_resilience, ConnectionState
-                connection_resilience.state = ConnectionState.CONNECTED
-                connection_resilience.metrics.last_successful_command = datetime.now()
-                connection_resilience.metrics.consecutive_failures = 0
-            except Exception as e:
-                logger.debug(f"Failed to update connection resilience state: {e}")
-        
-        return is_connected
-    except NetworkDebuggingError as e:
-        logger.warning(f"Network debugging issue detected: {e}")
-        return False
-    except Exception as e:
-        logger.debug(f"Connection test failed: {e}")
-        return False
-
-def test_target_connection() -> Tuple[bool, str]:
-    """
-    Test the WinDbg target connection specifically.
-    
-    Returns:
-        Tuple of (is_connected, status_message)
-    """
-    try:
-        # Check startup cache first to avoid redundant calls
-        cached_result = get_startup_cached_result("vertarget")
-        if cached_result is not None:
-            logger.debug("Using cached vertarget result for target connection test")
-            result = cached_result
-        else:
-            manager = get_communication_manager()
-            # Try a quick kernel command to test target responsiveness
-            # Use direct internal command to avoid triggering health monitoring
-            result = manager._send_command_internal("vertarget", timeout_ms=5000)
-            
-            # Cache the result during startup
-            cache_startup_command("vertarget", result)
-        
-        if "not connected" in result.lower():
-            return False, "WinDbg is not connected to a debugging target"
-        elif "kernel mode" in result.lower():
-            return True, "Connected to kernel debugging target"
-        elif "user mode" in result.lower():
-            return True, "Connected to user-mode debugging target"
-        else:
-            return True, "Connected to debugging target"
-            
-    except NetworkDebuggingError as e:
-        return False, f"Network debugging connection issue: {str(e)}"
-    except Exception as e:
-        return False, f"Failed to test target connection: {str(e)}"
-
-def diagnose_connection_issues() -> Dict[str, Any]:
-    """
-    Perform comprehensive connection diagnostics.
-    This function is called when basic connection tests fail, so it focuses on diagnosis rather than re-testing.
-    
-    Returns:
-        Dictionary with diagnostic information
-    """
-    diagnostics = {
-        "timestamp": datetime.now().isoformat(),
-        "extension_available": False,
-        "target_connected": False,
-        "network_debugging": False,
-        "health_info": {},
-        "recommendations": []
-    }
-    
-    try:
-        # Get current health status
-        manager = get_communication_manager()
-        health = manager.get_connection_health()
-        
-        diagnostics["health_info"] = {
-            "extension_responsive": health.extension_responsive,
-            "target_responsive": health.target_responsive,
-            "debugging_mode": health.network_debugging_mode.value,
-            "consecutive_failures": health.consecutive_failures,
-            "last_error": health.last_error
+    def diagnose_connection_issues(self) -> Dict[str, Any]:
+        """Run comprehensive connection diagnostics."""
+        diagnostics = {
+            "extension_available": False,
+            "target_connected": False,
+            "recommendations": []
         }
         
-        # Since we're here, basic connection test already failed
-        # Check if we have any cached results that might give us clues
-        cached_version = get_startup_cached_result("version")
-        if cached_version is not None:
-            diagnostics["extension_available"] = True
-            logger.debug("Extension was responsive during startup (cached version available)")
-        else:
-            diagnostics["recommendations"].append("Load the WinDbg MCP extension (.load extension)")
-        
-        # Test target connection to see if it's a target-specific issue
-        target_connected, target_status = test_target_connection()
-        diagnostics["target_connected"] = target_connected
-        diagnostics["target_status"] = target_status
-        
-        if not target_connected:
-            diagnostics["recommendations"].append("Connect WinDbg to a debugging target")
-        
-        # Detect network debugging scenarios
-        if "network" in target_status.lower() or health.network_debugging_mode in [DebuggingMode.VM_NETWORK, DebuggingMode.REMOTE]:
-            diagnostics["network_debugging"] = True
-            if health.consecutive_failures > 0:
-                diagnostics["recommendations"].extend([
-                    "Check network connection to debugging target",
-                    "Consider increasing timeout values for network debugging",
-                    "Try 'bc *' to clear breakpoints if target is unresponsive"
+        try:
+            diagnostics["extension_available"] = self.test_connection()
+            
+            target_connected, target_status = self.test_target_connection()
+            diagnostics["target_connected"] = target_connected
+            diagnostics["target_status"] = target_status
+            
+            recommendations = []
+            
+            if not diagnostics["extension_available"]:
+                recommendations.extend([
+                    "Load the WinDbg extension with: .load path\\to\\windbgmcpExt.dll",
+                    "Ensure WinDbg is running and the extension DLL is accessible"
                 ])
+            
+            if not diagnostics["target_connected"]:
+                recommendations.extend([
+                    "Ensure a debugging target is connected",
+                    "For kernel debugging, verify target VM configuration"
+                ])
+            
+            diagnostics["recommendations"] = recommendations
+            
+        except Exception as e:
+            logger.error(f"Failed to run diagnostics: {e}")
+            diagnostics["error"] = str(e)
         
-    except Exception as e:
-        diagnostics["error"] = f"Diagnostic error: {str(e)}"
+        return diagnostics
     
-    return diagnostics
+    def get_connection_health(self) -> ConnectionHealth:
+        """Get the current connection health status."""
+        with self._health_lock:
+            return self._connection_health
+    
+    def get_connection_pool_stats(self) -> Dict[str, Any]:
+        """Get connection pool statistics."""
+        return self._connection_pool.get_stats()
+    
+    def _send_message(self, message: Dict[str, Any], timeout_ms: int) -> Dict[str, Any]:
+        """Send a message to the WinDbg extension via named pipe."""
+        try:
+            with self._connection_pool.get_connection(timeout_ms) as handle:
+                message_bytes = MessageProtocol.serialize_message(message)
+                logger.debug(f"Sending {len(message_bytes)} bytes via pooled connection")
+                
+                NamedPipeProtocol.write_to_pipe(handle, message_bytes, timeout_ms)
+                response_data = NamedPipeProtocol.read_from_pipe(handle, timeout_ms)
+                
+                return MessageProtocol.parse_response(response_data)
+                
+        except Exception as pool_error:
+            logger.debug(f"Pooled connection failed, falling back to direct connection: {pool_error}")
+            
+            handle = None
+            try:
+                message_bytes = MessageProtocol.serialize_message(message)
+                handle = NamedPipeProtocol.connect_to_pipe(PIPE_NAME, timeout_ms)
+                
+                NamedPipeProtocol.write_to_pipe(handle, message_bytes, timeout_ms)
+                response_data = NamedPipeProtocol.read_from_pipe(handle, timeout_ms)
+                
+                return MessageProtocol.parse_response(response_data)
+                
+            finally:
+                if handle:
+                    NamedPipeProtocol.close_pipe(handle)
+    
+    def _update_health_on_success(self):
+        """Update connection health when a command succeeds."""
+        with self._health_lock:
+            self._connection_health.last_successful_command = datetime.now()
+            self._connection_health.consecutive_failures = 0
+            self._connection_health.last_error = None
+            self._connection_health.extension_responsive = True
+            self._connection_health.target_responsive = True
+            self._connection_health.is_connected = True
+    
+    def _update_health_on_failure(self, error_message: str):
+        """Update connection health when a failure occurs."""
+        with self._health_lock:
+            self._connection_health.consecutive_failures += 1
+            self._connection_health.last_error = error_message
+            
+            if self._connection_health.consecutive_failures >= 3:
+                self._connection_health.is_connected = False
+                self._connection_health.extension_responsive = False
 
-# Backward compatibility functions for existing code
-def set_network_debugging_mode(mode: DebuggingMode):
-    """Set network debugging mode (backward compatibility).""" 
-    set_debugging_mode(mode)
 
-def get_network_debugging_mode() -> DebuggingMode:
-    """Get current debugging mode (backward compatibility)."""
-    health = get_connection_health()
-    return DebuggingMode(health["debugging_mode"])
+# Global Communication Manager Instance
+_communication_manager: Optional[CommunicationManager] = None
+_manager_lock = threading.Lock()
 
+def _get_communication_manager() -> CommunicationManager:
+    """Get the global communication manager instance."""
+    global _communication_manager
+    with _manager_lock:
+        if _communication_manager is None:
+            _communication_manager = CommunicationManager()
+        return _communication_manager
+
+
+# Public API Functions
 def send_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     """
-    Send a command to the WinDbg extension with enhanced resilience.
-    
-    This function uses the CommunicationManager for improved reliability
-    and network debugging support.
+    Send a command to the WinDbg extension.
     
     Args:
         command: The WinDbg command to execute
@@ -635,8 +659,56 @@ def send_command(command: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     Raises:
         ConnectionError: If connection to the extension fails
         TimeoutError: If the command times out
-        NetworkDebuggingError: If network debugging issues are detected
         CommunicationError: If the command fails
     """
-    manager = get_communication_manager()
-    return manager.send_command(command, timeout_ms) 
+    manager = _get_communication_manager()
+    return manager.send_command(command, timeout_ms)
+
+
+def send_handler_command(handler_name: str, timeout_ms: int = DEFAULT_TIMEOUT_MS, **kwargs) -> Dict[str, Any]:
+    """
+    Send a direct handler command to the WinDbg extension.
+    
+    Args:
+        handler_name: Name of the handler
+        timeout_ms: Timeout in milliseconds
+        **kwargs: Additional arguments
+        
+    Returns:
+        The handler response as a dictionary
+    """
+    manager = _get_communication_manager()
+    return manager.send_handler_command(handler_name, timeout_ms, **kwargs)
+
+
+def test_connection() -> bool:
+    """
+    Test if the connection to the WinDbg extension is working.
+    
+    Returns:
+        True if connection is working, False otherwise
+    """
+    manager = _get_communication_manager()
+    return manager.test_connection()
+
+
+def test_target_connection() -> Tuple[bool, str]:
+    """
+    Test if the debugging target is responsive.
+    
+    Returns:
+        Tuple of (is_connected, status_message)
+    """
+    manager = _get_communication_manager()
+    return manager.test_target_connection()
+
+
+def diagnose_connection_issues() -> Dict[str, Any]:
+    """
+    Run comprehensive connection diagnostics.
+    
+    Returns:
+        Dictionary containing diagnostic results and recommendations
+    """
+    manager = _get_communication_manager()
+    return manager.diagnose_connection_issues() 

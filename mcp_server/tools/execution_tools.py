@@ -4,20 +4,19 @@ Command execution tools for WinDbg MCP server.
 This module contains tools for executing WinDbg commands and command sequences.
 """
 import logging
+import time
 from typing import Dict, Any, List, Optional, Union
 from fastmcp import FastMCP, Context
 
-from core.communication import send_command
 from core.validation import validate_command, is_safe_for_automation
 from core.context import get_context_manager, save_context, restore_context
 from core.error_handler import enhance_error, error_enhancer, DebugContext, ErrorCategory
 from core.hints import get_parameter_help, validate_tool_parameters
-from core.connection_resilience import execute_resilient_command
-from core.performance import execute_optimized_command
+from core.communication import send_command, CommunicationError, TimeoutError, ConnectionError
+from core.execution import get_executor, execute_command as execute_unified
 
 from .tool_utilities import (
-    categorize_command_timeout, get_direct_timeout, detect_kernel_mode,
-    get_command_suggestions
+    detect_kernel_mode, get_command_suggestions
 )
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ def register_execution_tools(mcp: FastMCP):
     @mcp.tool()
     async def run_command(ctx: Context, action: str = "", command: str = "", validate: bool = True, resilient: bool = True, optimize: bool = True) -> Union[str, Dict[str, Any]]:
         """
-        Execute a WinDbg command with enhanced validation, resilience, and performance optimization.
+        Execute a WinDbg command with validation, resilience, and performance optimization.
         
         Args:
             ctx: The MCP context
@@ -39,14 +38,12 @@ def register_execution_tools(mcp: FastMCP):
             optimize: Whether to use performance optimization (default: True)
             
         Returns:
-            Command result or enhanced error information
+            Command result or error information
         """
         logger.debug(f"Executing command: {command}, validate: {validate}, resilient: {resilient}, optimize: {optimize}")
-        logger.error(f"DEBUG: command parameter received: '{command}', type: {type(command)}, action: '{action}'")
         
         # Validate parameters
         is_valid, validation_errors = validate_tool_parameters("run_command", action, {"command": command})
-        logger.error(f"DEBUG: validation result: {is_valid}, errors: {validation_errors}")
         if not is_valid:
             enhanced_error = enhance_error("parameter", 
                                          tool_name="run_command", 
@@ -81,74 +78,35 @@ def register_execution_tools(mcp: FastMCP):
                     enhanced_error = enhance_error("safety", command=command)
                     return enhanced_error.to_dict()
             
-            # Choose execution method based on parameters
-            if optimize and resilient:
-                # Use optimized execution with automatic timeout categorization
-                timeout_category = categorize_command_timeout(command)
-                success, result, metadata = execute_optimized_command(command, timeout_category)
-                
-                if success:
-                    # Add performance information to result
-                    return {
-                        "success": True,
-                        "result": result,
-                        "execution_method": "optimized_resilient",
-                        "performance_info": {
-                            "cached": metadata.get("cached", False),
-                            "response_time": metadata.get("response_time", 0),
-                            "retries_used": metadata.get("retries_attempted", 0),
-                            "timeout_category": timeout_category,
-                            "optimization_level": metadata.get("optimization_level", "unknown")
-                        },
-                        "suggestions": get_command_suggestions(command, result)
-                    }
-                else:
-                    enhanced_error = enhance_error("execution", 
-                                                 command=command, 
-                                                 timeout_category=timeout_category)
-                    return enhanced_error.to_dict()
-                    
-            elif resilient:
-                # Use resilient execution without optimization
-                timeout_category = categorize_command_timeout(command)
-                success, result, metadata = execute_resilient_command(command, timeout_category)
-                
-                if success:
-                    return {
-                        "success": True,
-                        "result": result,
-                        "execution_method": "resilient",
-                        "resilience_info": {
-                            "response_time": metadata.get("response_time", 0),
-                            "retries_used": metadata.get("retries_attempted", 0),
-                            "timeout_category": timeout_category
-                        },
-                        "suggestions": get_command_suggestions(command, result)
-                    }
-                else:
-                    enhanced_error = enhance_error("execution", 
-                                                 command=command, 
-                                                 timeout_category=timeout_category)
-                    return enhanced_error.to_dict()
-                    
+            # Use unified execution system
+            execution_result = execute_unified(
+                command=command,
+                resilient=resilient,
+                optimize=optimize,
+                async_mode=False  # Keep synchronous for tool compatibility
+            )
+            
+            if execution_result.success:
+                # Convert to legacy format for backward compatibility
+                return execution_result.to_legacy_format()
             else:
-                # Direct execution
-                timeout_ms = get_direct_timeout(command)
-                result = send_command(command, timeout_ms)
+                # Convert execution error to enhanced error format
+                enhanced_error = enhance_error("execution", 
+                                             command=command, 
+                                             timeout_category=execution_result.timeout_category,
+                                             original_error=execution_result.error)
+                error_dict = enhanced_error.to_dict()
                 
-                if result is not None:
-                    return {
-                        "success": True,
-                        "result": result,
-                        "execution_method": "direct",
-                        "timeout_used": timeout_ms,
-                        "suggestions": get_command_suggestions(command, result)
-                    }
-                else:
-                    enhanced_error = enhance_error("timeout", 
-                                                 command=command, 
-                                                 timeout_ms=timeout_ms)
-                    return enhanced_error.to_dict()
+                # Add execution metadata
+                error_dict.update({
+                    "execution_method": execution_result.execution_mode.value,
+                    "execution_time": execution_result.execution_time,
+                    "retries_attempted": execution_result.retries_attempted,
+                    "timeout_ms": execution_result.timeout_ms,
+                    "timed_out": execution_result.timed_out
+                })
+                
+                return error_dict
                     
         except Exception as e:
             enhanced_error = enhance_error("unexpected", 
@@ -160,7 +118,7 @@ def register_execution_tools(mcp: FastMCP):
     @mcp.tool()
     async def run_sequence(ctx: Context, commands: List[str], stop_on_error: bool = False) -> Dict[str, Any]:
         """
-        Execute a sequence of WinDbg commands with enhanced error handling and performance optimization.
+        Execute a sequence of WinDbg commands with error handling and performance optimization.
         
         Args:
             ctx: The MCP context
@@ -172,20 +130,23 @@ def register_execution_tools(mcp: FastMCP):
         """
         logger.debug(f"Executing command sequence: {len(commands)} commands, stop_on_error: {stop_on_error}")
         
-        # Validate parameters
-        is_valid, validation_errors = validate_tool_parameters("run_sequence", "", {"commands": commands})
-        if not is_valid:
-            enhanced_error = enhance_error("parameter", 
-                                         tool_name="run_sequence", 
-                                         missing_param="commands")
-            return enhanced_error.to_dict()
-        
-        if not commands or not isinstance(commands, list):
+        # Validate parameters - Fixed parameter validation
+        if not commands:
             enhanced_error = enhance_error("parameter", 
                                          tool_name="run_sequence", 
                                          missing_param="commands")
             error_dict = enhanced_error.to_dict()
             error_dict["help"] = get_parameter_help("run_sequence")
+            error_dict["error_details"] = "Parameter 'commands' is required for this operation"
+            return error_dict
+        
+        if not isinstance(commands, list):
+            enhanced_error = enhance_error("parameter", 
+                                         tool_name="run_sequence", 
+                                         missing_param="commands")
+            error_dict = enhanced_error.to_dict()
+            error_dict["help"] = get_parameter_help("run_sequence")
+            error_dict["error_details"] = "Parameter 'commands' must be a list of strings"
             return error_dict
         
         # Update context for better error suggestions
@@ -193,7 +154,7 @@ def register_execution_tools(mcp: FastMCP):
         
         # Save context before sequence execution for potential rollback
         context_manager = get_context_manager()
-        context_saved = save_context(context_manager, f"run_sequence_{len(commands)}_commands")
+        context_saved = save_context(send_command)
         
         results = []
         successful_commands = 0
@@ -253,25 +214,30 @@ def register_execution_tools(mcp: FastMCP):
                         break
                     continue
                 
-                # Execute command with optimization
+                # Execute command with unified execution system
                 try:
-                    timeout_category = categorize_command_timeout(command)
-                    success, cmd_result, metadata = execute_optimized_command(command, timeout_category)
+                    execution_result = execute_unified(
+                        command=command,
+                        resilient=True,
+                        optimize=True,
+                        async_mode=False
+                    )
                     
-                    execution_time = metadata.get("response_time", 0)
+                    execution_time = execution_result.execution_time
                     total_execution_time += execution_time
                     
-                    if success:
+                    if execution_result.success:
                         result = {
                             "command": command,
                             "index": i,
                             "success": True,
-                            "result": cmd_result,
+                            "result": execution_result.result,
                             "execution_time": execution_time,
-                            "cached": metadata.get("cached", False),
-                            "retries_used": metadata.get("retries_attempted", 0),
-                            "timeout_category": timeout_category,
-                            "suggestions": get_command_suggestions(command, cmd_result)
+                            "cached": execution_result.cached,
+                            "retries_used": execution_result.retries_attempted,
+                            "timeout_category": execution_result.timeout_category,
+                            "execution_mode": execution_result.execution_mode.value,
+                            "suggestions": get_command_suggestions(command, execution_result.result)
                         }
                         successful_commands += 1
                     else:
@@ -279,10 +245,12 @@ def register_execution_tools(mcp: FastMCP):
                             "command": command,
                             "index": i,
                             "success": False,
-                            "error": "Command execution failed",
+                            "error": execution_result.error or "Command execution failed",
                             "execution_time": execution_time,
-                            "retries_used": metadata.get("retries_attempted", 0),
-                            "timeout_category": timeout_category
+                            "retries_used": execution_result.retries_attempted,
+                            "timeout_category": execution_result.timeout_category,
+                            "execution_mode": execution_result.execution_mode.value,
+                            "timed_out": execution_result.timed_out
                         }
                         failed_commands += 1
                         
@@ -361,10 +329,7 @@ def register_execution_tools(mcp: FastMCP):
     @mcp.tool()
     async def breakpoint_and_continue(ctx: Context, breakpoint: str, continue_execution: bool = True, clear_existing: bool = False) -> Dict[str, Any]:
         """
-        Set a breakpoint and optionally continue execution - optimized for LLM automation.
-        
-        This tool combines breakpoint setting with execution control in a single operation,
-        making it ideal for automated debugging workflows.
+        Set a breakpoint and optionally continue execution.
         
         Args:
             ctx: The MCP context
@@ -389,7 +354,7 @@ def register_execution_tools(mcp: FastMCP):
         
         # Save context before breakpoint operations
         context_manager = get_context_manager()
-        context_saved = save_context(context_manager, f"breakpoint_and_continue_{breakpoint}")
+        context_saved = save_context(send_command)
         
         results = []
         
@@ -398,16 +363,17 @@ def register_execution_tools(mcp: FastMCP):
             if clear_existing:
                 logger.debug("Clearing existing breakpoints")
                 try:
-                    success, clear_result, metadata = execute_optimized_command("bc *", "quick")
+                    clear_result = execute_unified("bc *", resilient=True, optimize=True)
                     results.append({
                         "step": "clear_existing_breakpoints",
                         "command": "bc *",
-                        "success": success,
-                        "result": clear_result,
-                        "execution_time": metadata.get("response_time", 0)
+                        "success": clear_result.success,
+                        "result": clear_result.result if clear_result.success else clear_result.error,
+                        "execution_time": clear_result.execution_time,
+                        "execution_mode": clear_result.execution_mode.value
                     })
-                    if not success:
-                        logger.warning(f"Failed to clear existing breakpoints: {clear_result}")
+                    if not clear_result.success:
+                        logger.warning(f"Failed to clear existing breakpoints: {clear_result.error}")
                 except Exception as e:
                     results.append({
                         "step": "clear_existing_breakpoints",
@@ -420,20 +386,21 @@ def register_execution_tools(mcp: FastMCP):
             bp_command = f"bp {breakpoint}"
             logger.debug(f"Setting breakpoint with command: {bp_command}")
             
-            success, bp_result, metadata = execute_optimized_command(bp_command, "quick")
+            bp_result = execute_unified(bp_command, resilient=True, optimize=True)
             results.append({
                 "step": "set_breakpoint",
                 "command": bp_command,
-                "success": success,
-                "result": bp_result,
-                "execution_time": metadata.get("response_time", 0),
-                "cached": metadata.get("cached", False)
+                "success": bp_result.success,
+                "result": bp_result.result if bp_result.success else bp_result.error,
+                "execution_time": bp_result.execution_time,
+                "cached": bp_result.cached,
+                "execution_mode": bp_result.execution_mode.value
             })
             
-            if not success:
+            if not bp_result.success:
                 return {
                     "success": False,
-                    "error": f"Failed to set breakpoint: {bp_result}",
+                    "error": f"Failed to set breakpoint: {bp_result.error}",
                     "breakpoint": breakpoint,
                     "steps_completed": results,
                     "suggestions": [
@@ -446,13 +413,14 @@ def register_execution_tools(mcp: FastMCP):
             
             # Step 3: List breakpoints to confirm
             try:
-                success, list_result, metadata = execute_optimized_command("bl", "quick")
+                list_result = execute_unified("bl", resilient=True, optimize=True)
                 results.append({
                     "step": "list_breakpoints",
                     "command": "bl",
-                    "success": success,
-                    "result": list_result,
-                    "execution_time": metadata.get("response_time", 0)
+                    "success": list_result.success,
+                    "result": list_result.result if list_result.success else list_result.error,
+                    "execution_time": list_result.execution_time,
+                    "execution_mode": list_result.execution_mode.value
                 })
             except Exception as e:
                 results.append({
@@ -467,18 +435,19 @@ def register_execution_tools(mcp: FastMCP):
             if continue_execution:
                 logger.debug("Continuing execution")
                 try:
-                    success, exec_result, metadata = execute_optimized_command("g", "execution")
+                    exec_result = execute_unified("g", resilient=True, optimize=True)
                     execution_result = {
                         "step": "continue_execution",
                         "command": "g",
-                        "success": success,
-                        "result": exec_result,
-                        "execution_time": metadata.get("response_time", 0)
+                        "success": exec_result.success,
+                        "result": exec_result.result if exec_result.success else exec_result.error,
+                        "execution_time": exec_result.execution_time,
+                        "execution_mode": exec_result.execution_mode.value
                     }
                     results.append(execution_result)
                     
-                    if not success:
-                        logger.warning(f"Failed to continue execution: {exec_result}")
+                    if not exec_result.success:
+                        logger.warning(f"Failed to continue execution: {exec_result.error}")
                         
                 except Exception as e:
                     execution_result = {

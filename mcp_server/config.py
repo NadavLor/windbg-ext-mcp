@@ -21,6 +21,12 @@ DEFAULT_TIMEOUT_MS = 30000
 QUICK_COMMAND_TIMEOUT_MS = 5000
 LONG_COMMAND_TIMEOUT_MS = 60000
 
+# Enhanced timeout settings for large operations
+BULK_OPERATION_TIMEOUT_MS = 120000  # 2 minutes for bulk operations
+LARGE_ANALYSIS_TIMEOUT_MS = 180000  # 3 minutes for large analysis
+PROCESS_LIST_TIMEOUT_MS = 300000    # 5 minutes for full process lists
+STREAMING_TIMEOUT_MS = 600000       # 10 minutes for streaming operations
+
 # Retry configuration
 MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY_MS = 1000
@@ -94,6 +100,12 @@ class TimeoutConfig:
     analysis: int = 60000  # Analysis commands
     memory: int = 45000    # Memory operations
     execution: int = 30000 # Execution control
+    bulk: int = 120000     # Bulk operations (module lists, etc.)
+    large_analysis: int = 180000  # Large analysis operations
+    process_list: int = 300000    # Full process enumeration
+    streaming: int = 600000       # Streaming operations
+    symbols: int = 180000         # Symbol operations (.reload, .sympath)
+    extended: int = 900000        # Extended operations (.reload /f, heavy symbol loading)
 
 @dataclass
 class RetryConfig:
@@ -126,6 +138,18 @@ ANALYSIS_COMMANDS = {"!analyze", "!thread", "!process"}
 MEMORY_COMMANDS = {"dd", "dq", "dp", "da", "du"}
 EXECUTION_COMMANDS = {"g", "p", "t", "bp", "bc"}
 
+# Large operation commands that need extended timeouts
+BULK_COMMANDS = {"lm", "!dlls", "!handle", "!vm", "!address"}
+LARGE_ANALYSIS_COMMANDS = {"!analyze -v", "!thread -1", "!process -1"}
+PROCESS_LIST_COMMANDS = {"!process 0 0", "!process 0 7", "!process 0 1f"}
+STREAMING_COMMANDS = {"!for_each_process", "!for_each_thread", "!for_each_module"}
+
+# Symbol operations that need extended timeouts
+SYMBOL_OPERATIONS = {".reload", ".reload /f", ".reload -f", ".sympath", ".symfix"}
+
+# Commands that need very long timeouts (symbol loading, etc.)
+EXTENDED_TIMEOUT_COMMANDS = {".reload /f", ".reload -f"}
+
 # Kernel-mode compatible commands for health checks
 KERNEL_HEALTH_COMMANDS = ["version", "!pcr", ".effmach"]
 
@@ -156,14 +180,36 @@ def get_timeout_for_command(command: str, mode: DebuggingMode = DebuggingMode.LO
         Timeout in milliseconds
     """
     # Determine base timeout by command type
-    cmd_lower = command.lower()
+    cmd_lower = command.lower().strip()
     
-    if any(quick_cmd in cmd_lower for quick_cmd in QUICK_COMMANDS):
+    # Check for extended timeout commands first (most specific)
+    if any(ext_cmd in cmd_lower for ext_cmd in EXTENDED_TIMEOUT_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.extended
+    # Check for symbol operations
+    elif any(sym_cmd in cmd_lower for sym_cmd in SYMBOL_OPERATIONS):
+        base_timeout = DEFAULT_TIMEOUTS.symbols
+    # Check for process list commands
+    elif any(proc_cmd in cmd_lower for proc_cmd in PROCESS_LIST_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.process_list
+    # Check for streaming commands
+    elif any(stream_cmd in cmd_lower for stream_cmd in STREAMING_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.streaming
+    # Check for large analysis commands
+    elif any(large_cmd in cmd_lower for large_cmd in LARGE_ANALYSIS_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.large_analysis
+    # Check for bulk commands
+    elif any(bulk_cmd in cmd_lower for bulk_cmd in BULK_COMMANDS):
+        base_timeout = DEFAULT_TIMEOUTS.bulk
+    # Check for quick commands
+    elif any(quick_cmd in cmd_lower for quick_cmd in QUICK_COMMANDS):
         base_timeout = DEFAULT_TIMEOUTS.quick
+    # Check for analysis commands
     elif any(analysis_cmd in cmd_lower for analysis_cmd in ANALYSIS_COMMANDS):
         base_timeout = DEFAULT_TIMEOUTS.analysis
+    # Check for memory commands
     elif any(memory_cmd in cmd_lower for memory_cmd in MEMORY_COMMANDS):
         base_timeout = DEFAULT_TIMEOUTS.memory
+    # Check for execution commands
     elif any(exec_cmd in cmd_lower for exec_cmd in EXECUTION_COMMANDS):
         base_timeout = DEFAULT_TIMEOUTS.execution
     else:
@@ -171,7 +217,14 @@ def get_timeout_for_command(command: str, mode: DebuggingMode = DebuggingMode.LO
     
     # Apply mode-specific multiplier
     multiplier = TIMEOUT_MULTIPLIERS.get(mode, 1.0)
-    return int(base_timeout * multiplier)
+    final_timeout = int(base_timeout * multiplier)
+    
+    # Log timeout decision for debugging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Timeout for '{command}': {final_timeout}ms (base: {base_timeout}ms, multiplier: {multiplier})")
+    
+    return final_timeout
 
 def get_retry_delay(attempt: int, base_delay: int = None, exponential: bool = None) -> float:
     """

@@ -1,7 +1,7 @@
 """
 Asynchronous operations package for WinDbg MCP Extension.
 
-This package provides async and non-blocking operations for improved performance
+This package provides async and non-blocking operations for performance
 in network debugging scenarios, including background command execution,
 concurrent task management, and async health monitoring.
 

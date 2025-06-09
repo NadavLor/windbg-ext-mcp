@@ -7,11 +7,18 @@ import logging
 from typing import Dict, Any, List, Optional, Union
 from fastmcp import FastMCP, Context
 
-from core.communication import send_command, test_connection
+from core.communication import send_command, test_connection, test_target_connection
 from core.error_handler import enhance_error, error_enhancer, DebugContext
 from core.hints import get_parameter_help
+# _get_timeout moved to unified execution system
 
 logger = logging.getLogger(__name__)
+
+def _get_timeout(command: str) -> int:
+    """Helper function to get timeout for commands using unified system."""
+    from core.execution.timeout_resolver import resolve_timeout
+    from config import DebuggingMode
+    return resolve_timeout(command, DebuggingMode.VM_NETWORK)
 
 def register_support_tools(mcp: FastMCP):
     """Register all support and troubleshooting tools."""
@@ -28,47 +35,51 @@ def register_support_tools(mcp: FastMCP):
         Returns:
             Troubleshooting results and recommendations
         """
-        logger.debug(f"Troubleshoot action: {action}")
+        logger.debug(f"Troubleshooting action: {action}")
         
         try:
             if action == "symbols":
-                results = []
-                results.append("=== SYMBOL TROUBLESHOOTING ===")
+                # Symbol troubleshooting
+                results = ["=== SYMBOL TROUBLESHOOTING ==="]
                 
-                # Check symbol path
-                sympath = send_command(".sympath", timeout_ms=10000)
-                results.append(f"\nSymbol path:\n{sympath}")
+                try:
+                    # Check symbol path
+                    sympath = send_command(".sympath", timeout_ms=_get_timeout(".sympath"))
+                    results.append(f"Symbol path: {sympath}")
+                    
+                    # Check specific modules
+                    modules = ["nt", "ntdll", "kernel32"]
+                    for module in modules:
+                        try:
+                            module_info = send_command(f"lmv m {module}", timeout_ms=_get_timeout(f"lmv m {module}"))
+                            results.append(f"\n{module} module:\n{module_info}")
+                        except:
+                            results.append(f"\n{module} module: Not found")
+                    
+                    # Try symbol reload
+                    results.append("\nAttempting symbol reload...")
+                    reload_result = send_command(".reload", timeout_ms=_get_timeout(".reload"))
+                    results.append(reload_result)
+                    
+                    return "\n".join(results)
+                except Exception as e:
+                    return f"Symbol troubleshooting failed: {str(e)}"
                 
-                # Check critical modules
-                for module in ["nt", "ntoskrnl", "ntdll"]:
-                    try:
-                        module_info = send_command(f"lmv m {module}", timeout_ms=10000)
-                        results.append(f"\n{module} module:\n{module_info}")
-                    except:
-                        results.append(f"\n{module} module: Not found")
-                
-                # Try symbol reload
-                results.append("\nAttempting symbol reload...")
-                reload_result = send_command(".reload", timeout_ms=30000)
-                results.append(reload_result)
-                
-                return "\n".join(results)
-            
             elif action == "exception":
                 # Analyze current exception
-                result = send_command("!analyze -v", timeout_ms=60000)
+                result = send_command("!analyze -v", timeout_ms=_get_timeout("!analyze -v"))
                 return f"=== EXCEPTION ANALYSIS ===\n{result}"
             
             elif action == "analyze":
                 # General system analysis
-                result = send_command("!analyze -v", timeout_ms=60000)
+                result = send_command("!analyze -v", timeout_ms=_get_timeout("!analyze -v"))
                 return f"=== SYSTEM ANALYSIS ===\n{result}"
             
             elif action == "connection":
                 # Test connection and provide status
                 connected = test_connection()
                 if connected:
-                    version = send_command("version", timeout_ms=5000)
+                    version = send_command("version", timeout_ms=_get_timeout("version"))
                     return f"✓ Connection OK\n\nWinDbg Version:\n{version}"
                 else:
                     return "✗ Connection Failed\n\nEnsure:\n1. WinDbg extension is loaded\n2. Extension DLL is correct version\n3. Named pipe is available"
@@ -107,7 +118,7 @@ def register_support_tools(mcp: FastMCP):
             
             return {
                 "available_tools": available_tools,
-                "description": "WinDbg MCP Server - Enhanced Debugging Edition with LLM Automation",
+                "description": "WinDbg MCP Server - Debugging with LLM Automation",
                 "usage": "Use get_help(tool_name='tool_name') to get help for a specific tool",
                 "examples": [
                     "get_help(tool_name='analyze_process')",
@@ -128,26 +139,29 @@ def register_support_tools(mcp: FastMCP):
                     "context_switching": "✅ Now enabled for LLM automation (.thread, .process)",
                     "combined_operations": "✅ Use breakpoint_and_continue for one-step breakpoint + execution"
                 },
-                "tip": "All tools now provide enhanced error messages with suggestions and examples when something goes wrong"
+                "tip": "All tools provide error messages with suggestions and examples when something goes wrong"
             }
         
-        # Get help for specific tool
-        help_info = get_parameter_help(tool_name, action)
+        # Get help for specific tool - Fixed parameter validation
+        try:
+            help_info = get_parameter_help(tool_name, action)
+        except Exception as e:
+            logger.debug(f"Error getting parameter help for {tool_name}: {e}")
+            help_info = None
         
         if not help_info:
-            enhanced_error = enhance_error("parameter", 
-                                         tool_name="get_help", 
-                                         action="help", 
-                                         missing_param="tool_name")
-            error_dict = enhanced_error.to_dict()
-            error_dict["available_tools"] = [
-                "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
-                "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
-                "connection_manager", "session_manager",
-                "performance_manager", "async_manager", 
-                "troubleshoot", "get_help"
-            ]
-            return error_dict
+            return {
+                "error": f"Tool '{tool_name}' not found or no help available",
+                "error_code": "tool_not_found", 
+                "available_tools": [
+                    "debug_session", "run_command", "run_sequence", "breakpoint_and_continue",
+                    "analyze_process", "analyze_thread", "analyze_memory", "analyze_kernel",
+                    "connection_manager", "session_manager",
+                    "performance_manager", "async_manager", 
+                    "troubleshoot", "get_help"
+                ],
+                "suggestion": f"Use get_help() without parameters to see all available tools"
+            }
         
         # Add debugging context information
         current_context = error_enhancer.current_context
@@ -193,7 +207,7 @@ def register_support_tools(mcp: FastMCP):
             ]
             help_info["automation_benefits"] = [
                 "🚀 Combines breakpoint setting + execution control in one operation",
-                "🎯 Optimized for LLM debugging workflows",
+                "🎯 Designed for LLM debugging workflows",
                 "🔄 Automatic context saving and error recovery",
                 "📊 Detailed step-by-step execution reporting",
                 "💡 Built-in guidance for next debugging steps"
@@ -202,7 +216,7 @@ def register_support_tools(mcp: FastMCP):
             help_info["analysis_tips"] = [
                 "Use save_context=True (default) when switching contexts",
                 "Tools automatically detect kernel vs user mode",
-                "Enhanced error messages guide you when operations fail"
+                "Error messages guide you when operations fail"
             ]
         elif tool_name in ["performance_manager", "async_manager"]:
             help_info["performance_tips"] = [
@@ -212,96 +226,6 @@ def register_support_tools(mcp: FastMCP):
             ]
         
         return help_info 
-
-    @mcp.tool()
-    async def diagnose_hybrid_connection() -> str:
-        """
-        Perform comprehensive connection diagnostics for the hybrid architecture.
-        
-        This tool helps troubleshoot communication issues between:
-        - Cursor ↔ Python MCP Server (stdio transport)
-        - Python MCP Server ↔ WinDbg Extension (named pipe)
-        - WinDbg ↔ Debugging Target (network/serial)
-        
-        Returns:
-            Detailed diagnostic report with recommendations
-        """
-        try:
-            from core.communication import (
-                diagnose_connection_issues, get_connection_health,
-                test_connection, test_target_connection
-            )
-            
-            # Get comprehensive diagnostics
-            diagnostics = diagnose_connection_issues()
-            health = get_connection_health()
-            
-            # Build detailed report
-            report = ["🔍 HYBRID ARCHITECTURE DIAGNOSTICS", "=" * 50, ""]
-            
-            # MCP Server Status
-            report.extend([
-                "📡 MCP Server Status:",
-                f"  • Architecture: Hybrid (stdio + named pipe)",
-                f"  • Timestamp: {diagnostics['timestamp']}",
-                ""
-            ])
-            
-            # Extension Connection Status
-            report.extend([
-                "🔌 WinDbg Extension Connection:",
-                f"  • Available: {'✓' if diagnostics['extension_available'] else '✗'}",
-                f"  • Consecutive failures: {health['consecutive_failures']}",
-                ""
-            ])
-            
-            # Target Connection Status
-            report.extend([
-                "🎯 Debugging Target Connection:",
-                f"  • Connected: {'✓' if diagnostics['target_connected'] else '✗'}",
-                f"  • Network debugging: {'✓' if diagnostics['network_debugging'] else '✗'}",
-                f"  • Mode: {health['debugging_mode']}",
-                ""
-            ])
-            
-            if diagnostics.get('target_status'):
-                report.extend([
-                    f"  • Status: {diagnostics['target_status']}",
-                    ""
-                ])
-            
-            # Health Information
-            if health.get('last_error'):
-                report.extend([
-                    "⚠ Last Error:",
-                    f"  • {health['last_error']}",
-                    ""
-                ])
-            
-            # Recommendations
-            if diagnostics.get('recommendations'):
-                report.extend([
-                    "💡 Recommendations:",
-                ])
-                for rec in diagnostics['recommendations']:
-                    report.append(f"  • {rec}")
-                report.append("")
-            
-            # Network Debugging Specific Advice
-            if diagnostics['network_debugging']:
-                report.extend([
-                    "🌐 Network Debugging Tips:",
-                    "  • Packet loss is common - retry logic is active",
-                    "  • Use longer timeouts for complex commands", 
-                    "  • Consider '.restart' if target becomes unresponsive",
-                    "  • Check VM network settings if connection is unstable",
-                    ""
-                ])
-            
-            return "\n".join(report)
-            
-        except Exception as e:
-            return f"❌ Diagnostic error: {str(e)}"
 
     @mcp.tool()
     async def test_windbg_communication() -> str:
@@ -317,7 +241,7 @@ def register_support_tools(mcp: FastMCP):
         try:
             from core.communication import (
                 test_connection, test_target_connection, send_command,
-                get_connection_health, NetworkDebuggingError
+                NetworkDebuggingError
             )
             
             results = ["🧪 WINDBG COMMUNICATION TEST", "=" * 40, ""]
@@ -334,50 +258,39 @@ def register_support_tools(mcp: FastMCP):
             
             results.append("")
             
-            # Test 2: Target connection
+            # Test 2: Test target connection
             try:
-                target_connected, target_status = test_target_connection()
-                if target_connected:
-                    results.append(f"✅ Test 2: Target connection - PASSED ({target_status})")
+                is_connected, status = test_target_connection()
+                if is_connected:
+                    results.append("✅ Test 2: Target connection - PASSED (Kernel debugging target connected)")
                 else:
-                    results.append(f"❌ Test 2: Target connection - FAILED ({target_status})")
-            except NetworkDebuggingError as e:
-                results.append(f"⚠ Test 2: Network debugging issue - {e}")
+                    results.append(f"❌ Test 2: Target connection - FAILED ({status})")
             except Exception as e:
                 results.append(f"❌ Test 2: Target connection - ERROR: {e}")
             
             results.append("")
             
-            # Test 3: Simple command execution
+            # Test 3: Basic command execution
             try:
-                result = send_command("version", timeout_ms=5000)
-                if result and not result.startswith("Error:"):
+                result = send_command("version", timeout_ms=_get_timeout("version"))
+                if result and "Windows" in result:
                     results.append("✅ Test 3: Command execution - PASSED")
                     results.append(f"    Response: {result[:100]}...")
                 else:
-                    results.append(f"❌ Test 3: Command execution - FAILED: {result}")
-            except NetworkDebuggingError as e:
-                results.append(f"⚠ Test 3: Network debugging issue - {e}")
+                    results.append("❌ Test 3: Command execution - FAILED (No response)")
             except Exception as e:
                 results.append(f"❌ Test 3: Command execution - ERROR: {e}")
             
             results.append("")
-            
-            # Show basic summary without misleading status indicators
-            health = get_connection_health()
-            results.extend([
-                "📊 Summary:",
-                f"  • Debugging mode: {health['debugging_mode']}",
-                f"  • Connection failures: {health['consecutive_failures']}",
-            ])
-            
-            if health.get('last_successful_command'):
-                results.append(f"  • Last success: {health['last_successful_command']}")
+            results.append("📊 Summary:")
+            results.append("  • Communication tests completed")
+            results.append("  • Check individual test results above for details")
             
             return "\n".join(results)
             
         except Exception as e:
-            return f"❌ Communication test error: {str(e)}"
+            logger.error(f"Communication test failed: {e}")
+            return f"❌ Communication test failed: {str(e)}"
 
     @mcp.tool()
     async def network_debugging_troubleshoot() -> str:
@@ -391,78 +304,61 @@ def register_support_tools(mcp: FastMCP):
             Network debugging troubleshooting guide and status
         """
         try:
-            from core.communication import get_connection_health, send_command, NetworkDebuggingError
+            from core.communication import (
+                test_connection, test_target_connection, send_command,
+                NetworkDebuggingError
+            )
             
-            guide = ["🌐 NETWORK DEBUGGING TROUBLESHOOT", "=" * 45, ""]
+            results = ["🌐 NETWORK DEBUGGING TROUBLESHOOT", "=" * 42, ""]
             
-            # Check current status
-            health = get_connection_health()
-            
-            guide.extend([
-                "📋 Current Status:",
-                f"  • Debugging mode: {health['debugging_mode']}",
-                f"  • Connection failures: {health['consecutive_failures']}",
-                ""
-            ])
-            
-            # Try to detect network debugging issues
-            network_issues_detected = False
-            
+            # Test 1: Basic connectivity
             try:
-                # Try a simple command to test responsiveness
-                result = send_command("version", timeout_ms=3000)
-            except NetworkDebuggingError as e:
-                network_issues_detected = True
-                guide.extend([
-                    "⚠ NETWORK ISSUES DETECTED:",
-                    f"  • {str(e)}",
-                    ""
-                ])
+                connected = test_connection()
+                if connected:
+                    results.append("✅ Extension connection - OK")
+                else:
+                    results.append("❌ Extension connection - FAILED")
+                    results.append("   → Load extension: .load C:\\path\\to\\windbgmcpExt.dll")
+                    results.append("")
             except Exception as e:
-                guide.extend([
-                    "❌ Communication Error:",
-                    f"  • {str(e)}",
-                    ""
-                ])
+                results.append(f"❌ Extension connection error: {e}")
             
-            # Provide troubleshooting steps
-            guide.extend([
-                "🛠 TROUBLESHOOTING STEPS:",
-                "",
-                "1. Verify WinDbg Connection:",
-                "   • Check if WinDbg shows 'Connected to...' status",
-                "   • Run 'vertarget' in WinDbg command window",
-                "   • Ensure debugging session is active",
-                "",
-                "2. Network Connection:",
-                "   • Verify VM network adapter is connected",
-                "   • Check firewall settings on both host and VM",
-                "   • Try '.restart' command if target is unresponsive",
-                "",
-                "3. WinDbg Extension:",
-                "   • Verify extension is loaded: '.chain'",
-                "   • Check extension status: 'mcpstatus'",
-                "   • Reload if needed: '.unload extension; .load extension'",
-                "",
-                "4. Advanced Troubleshooting:",
-                "   • Increase timeout values for network debugging",
-                "   • Clear all breakpoints: 'bc *'",
-                "   • Reboot target VM if completely unresponsive",
-                "   • Check VM debugging settings (bcdedit)",
-                ""
-            ])
+            # Test 2: Target connectivity with network considerations
+            try:
+                is_connected, status = test_target_connection()
+                if is_connected:
+                    results.append("✅ Target connection - OK")
+                    
+                    # Get additional network debugging info
+                    result = send_command("version", timeout_ms=_get_timeout("version"))
+                    if "Remote KD" in result:
+                        results.append("   → Network kernel debugging detected")
+                        if "Trans=@{NET:" in result:
+                            results.append("   → Using network transport (optimal)")
+                        else:
+                            results.append("   → Check network transport configuration")
+                else:
+                    results.append(f"❌ Target connection - FAILED: {status}")
+                    results.append("   → Check VM network debugging configuration")
+                    results.append("   → Verify bcdedit settings on target VM")
+                    
+            except Exception as e:
+                results.append(f"❌ Target connection error: {e}")
             
-            if network_issues_detected:
-                guide.extend([
-                    "🎯 IMMEDIATE ACTIONS:",
-                    "   • The MCP server will automatically retry failed commands",
-                    "   • Timeout values are increased for network debugging",
-                    "   • Connection monitoring is active",
-                    "   • Consider running simpler commands first",
-                    ""
-                ])
+            results.append("")
+            results.append("🔧 NETWORK DEBUGGING TIPS:")
+            results.append("   • Increase timeouts for unstable connections")
+            results.append("   • Use resilient execution mode (enabled by default)")
+            results.append("   • Monitor packet loss with network tools")
+            results.append("   • Consider increasing VM network adapter buffer sizes")
+            results.append("")
+            results.append("📋 Quick Commands:")
+            results.append("   • Run 'vertarget' in WinDbg command window")
+            results.append("   • Check '.kdfiles' for symbol loading over network")
+            results.append("   • Use '!vm' to check target memory accessibility")
             
-            return "\n".join(guide)
+            return "\n".join(results)
             
         except Exception as e:
-            return f"❌ Troubleshooting error: {str(e)}" 
+            logger.error(f"Network troubleshooting failed: {e}")
+            return f"❌ Network troubleshooting failed: {str(e)}" 
