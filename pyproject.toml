@@ -79,3 +79,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["mcp_server*"]
+
+[project.scripts]
+mcp-windbg-ext = "mcp_server.__main__:main"
