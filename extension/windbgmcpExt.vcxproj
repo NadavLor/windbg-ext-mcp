@@ -71,19 +71,27 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(SolutionDir)build\$(Platform)\$(Configuration)\Intermediate\</IntDir>
+    <OutDir>$(SolutionDir)out\bin\$(Platform.ToLower())-$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)out\tmp\$(ProjectName)\$(Platform.ToLower())-$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(SolutionDir)build\$(Platform)\$(Configuration)\Intermediate\</IntDir>
+    <OutDir>$(SolutionDir)out\bin\$(Platform.ToLower())-$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)out\tmp\$(ProjectName)\$(Platform.ToLower())-$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)out\bin\$(Platform.ToLower())-$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)out\tmp\$(ProjectName)\$(Platform.ToLower())-$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(SolutionDir)out\bin\$(Platform.ToLower())-$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)out\tmp\$(ProjectName)\$(Platform.ToLower())-$(Configuration)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;WINDBGMCPEXT_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir);$(ProjectDir)include;$(WindowsSdkDir)Include\10.0.22621.0\um;$(WindowsSdkDir)Include\10.0.22621.0\shared;$(WindowsSdkDir)Debuggers\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -102,7 +110,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;WINDBGMCPEXT_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir);$(ProjectDir)include;$(WindowsSdkDir)Include\10.0.22621.0\um;$(WindowsSdkDir)Include\10.0.22621.0\shared;$(WindowsSdkDir)Debuggers\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -121,7 +129,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;WINDBGMCPEXT_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir);$(ProjectDir)include;$(WindowsSdkDir)Include\10.0.22621.0\um;$(WindowsSdkDir)Include\10.0.22621.0\shared;$(WindowsSdkDir)Debuggers\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -142,7 +150,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;WINDBGMCPEXT_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir);$(ProjectDir)include;$(WindowsSdkDir)Include\10.0.22621.0\um;$(WindowsSdkDir)Include\10.0.22621.0\shared;$(WindowsSdkDir)Debuggers\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
