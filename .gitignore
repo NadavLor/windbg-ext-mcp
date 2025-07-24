@@ -21,6 +21,7 @@ var/
 
 # C++ build files
 extension/build/
+extension/out/
 x64/
 Debug/
 Release/
