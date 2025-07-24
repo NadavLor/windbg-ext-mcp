@@ -1,28 +1,40 @@
-[tool.poetry]
+[project]
 name = "windbg-ext-mcp"
 version = "0.1.0"
 description = "WinDbg Extension for MCP integration"
-authors = ["NadavLorber"]
+authors = [
+    {name = "NadavLorber"}
+]
 readme = "README.md"
-packages = [{include = "mcp_server"}]
+requires-python = ">=3.10"
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: Microsoft :: Windows",
+]
+dependencies = [
+    "pywin32>=305",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.15.0",
+    "typing-extensions>=4.0.0",
+    "fastmcp>=2.3.5",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-pywin32 = ">=305"
-fastmcp = ">=2.3.5"
-pydantic = ">=2.0.0"
-uvicorn = ">=0.15.0"
-typing-extensions = ">=4.0.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.0.0"
-pytest-mock = ">=3.10.0"
-pytest-cov = ">=4.0.0"
-pytest-benchmark = ">=4.0.0"
-pytest-asyncio = ">=0.20.0"
-pytest-timeout = ">=2.1.0"
-pytest-xdist = ">=3.0.0"
-coverage = ">=7.0.0"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+    "pytest-benchmark>=4.0.0",
+    "pytest-asyncio>=0.20.0",
+    "pytest-timeout>=2.1.0",
+    "pytest-xdist>=3.0.0",
+    "coverage>=7.0.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["mcp_server/tests"]
@@ -62,5 +74,11 @@ exclude_lines = [
 ]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mcp_server*"]
+
+[project.scripts]
+mcp-windbg-ext = "mcp_server.__main__:main"
