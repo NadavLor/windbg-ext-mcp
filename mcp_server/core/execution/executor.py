@@ -174,9 +174,12 @@ class UnifiedCommandExecutor:
                 failed_commands += 1
                 
                 if stop_on_error:
+                    # Include the failing result, then stop
+                    results.append(batch_result)
                     logger.warning(f"Stopping batch execution at command {i+1} due to error")
+                    total_execution_time += result.execution_time
                     break
-            
+
             results.append(batch_result)
             total_execution_time += result.execution_time
         

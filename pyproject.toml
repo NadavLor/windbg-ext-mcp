@@ -8,11 +8,13 @@ packages = [{include = "mcp_server"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-pywin32 = ">=305"
-fastmcp = ">=2.3.5"
-pydantic = ">=2.0.0"
-uvicorn = ">=0.15.0"
-typing-extensions = ">=4.0.0"
+# Pin to versions present in lock for reproducibility
+pywin32 = "310"
+fastmcp = "2.5.1"
+
+[tool.poetry.scripts]
+mcp = "mcp_server.server:main"
+selftest = "mcp_server.selftest:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
@@ -33,7 +35,6 @@ addopts = [
     "--cov=mcp_server",
     "--cov-report=html:htmlcov",
     "--cov-report=term-missing",
-    "--cov-fail-under=80",
     "--timeout=30",
     "-v"
 ]

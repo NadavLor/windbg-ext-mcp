@@ -260,57 +260,6 @@ class AsyncStrategy(ExecutionStrategy):
     def get_execution_mode(self) -> ExecutionMode:
         return ExecutionMode.ASYNC
 
-class HybridStrategy(ExecutionStrategy):
-    """
-    Hybrid strategy that combines resilient and optimized execution.
-    
-    This provides the best of both worlds: optimization with fallback resilience.
-    """
-    
-    def __init__(self):
-        self.optimized = OptimizedStrategy()
-        self.resilient = ResilientStrategy()
-    
-    def execute(self, context: ExecutionContext) -> ExecutionResult:
-        """Execute with optimization first, then resilient fallback if needed."""
-        logger.debug(f"Hybrid execution: {context.command}")
-        
-        # Try optimized execution first
-        result = self.optimized.execute(context)
-        
-        if result.success:
-            # Mark as hybrid execution but keep optimization metadata
-            result.execution_mode = ExecutionMode.OPTIMIZED
-            result.metadata["hybrid_execution"] = True
-            result.metadata["primary_strategy"] = "optimized"
-            return result
-        
-        # If optimized execution failed, try resilient execution
-        logger.info(f"Optimized execution failed, falling back to resilient: {result.error}")
-        
-        # Create new context for resilient execution
-        resilient_context = ExecutionContext(
-            command=context.command,
-            resilient=True,
-            optimize=False,  # Disable optimization for fallback
-            timeout_category=context.timeout_category,
-            max_retries=context.max_retries,
-            metadata=context.metadata.copy()
-        )
-        
-        resilient_result = self.resilient.execute(resilient_context)
-        
-        # Mark as hybrid execution
-        resilient_result.execution_mode = ExecutionMode.RESILIENT 
-        resilient_result.metadata["hybrid_execution"] = True
-        resilient_result.metadata["primary_strategy"] = "resilient"
-        resilient_result.metadata["optimized_failed"] = True
-        
-        return resilient_result
-    
-    def get_execution_mode(self) -> ExecutionMode:
-        return ExecutionMode.OPTIMIZED  # Primary mode
-
 # Strategy factory
 def create_strategy(
     resilient: bool = True,
@@ -330,8 +279,6 @@ def create_strategy(
     """
     if async_mode:
         return AsyncStrategy()
-    elif resilient and optimize:
-        return OptimizedStrategy()  # Optimized includes resilience
     elif optimize:
         return OptimizedStrategy()
     elif resilient:

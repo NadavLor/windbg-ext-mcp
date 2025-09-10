@@ -1,138 +1,101 @@
 #!/usr/bin/env python
 """
-WinDbg MCP Server - Production Edition.
+WinDbg MCP Server
 
-This is the main entry point for the MCP server that provides AI-assisted
-Windows kernel debugging through natural language interactions.
+Main entry point for the MCP server that brokers between MCP clients and the
+WinDbg extension over a named pipe.
 """
-import sys
+import argparse
 import logging
-from typing import Any, Dict, List, Optional, Union
+import sys
+from pathlib import Path
+from typing import Dict
 
 from fastmcp import FastMCP
+
+# Make intra-package absolute imports like `from config import ...` resolve
+sys.path.insert(0, str(Path(__file__).parent))
+
 from config import LOG_FORMAT, load_environment_config, LOG_LEVEL, DEBUG_ENABLED
 from tools import register_all_tools, get_tool_info
 from core.server_initialization import ServerInitializer, InitializationConfig
 
 
-# Configure logging
-load_environment_config()
-
-# Create different handlers for different log levels
-class SplitLevelHandler:
-    """Split logging by level to avoid INFO messages showing as errors in MCP client."""
-    
-    def __init__(self):
-        # Handler for actual errors (goes to stderr - will show as [error] in client)
-        self.error_handler = logging.StreamHandler(sys.stderr)
-        self.error_handler.setLevel(logging.ERROR)
-        self.error_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-        
-        # Handler for info/debug (goes to stderr but with different format to distinguish)
-        self.info_handler = logging.StreamHandler(sys.stderr)
-        self.info_handler.setLevel(logging.INFO)
-        self.info_handler.setFormatter(logging.Formatter('📋 %(message)s'))
-        
-        # Filter to only show INFO/DEBUG (not ERROR+)
-        class InfoOnlyFilter(logging.Filter):
-            def filter(self, record):
-                return record.levelno < logging.ERROR
-        
-        self.info_handler.addFilter(InfoOnlyFilter())
-
-# Configure split-level logging
-split_handler = SplitLevelHandler()
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    handlers=[split_handler.error_handler, split_handler.info_handler]
-)
-
-logger = logging.getLogger(__name__)
-
-if DEBUG_ENABLED:
-    logger.setLevel(logging.DEBUG)
-    logging.getLogger('fastmcp').setLevel(logging.DEBUG)
+def _configure_logging() -> logging.Logger:
+    load_environment_config()
+    logging.basicConfig(level=getattr(logging, LOG_LEVEL), format=LOG_FORMAT)
+    logger = logging.getLogger(__name__)
+    if DEBUG_ENABLED:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger("fastmcp").setLevel(logging.DEBUG)
+    return logger
 
 
 class WinDbgMCPServer:
     """Main WinDbg MCP Server class."""
-    
-    def __init__(self):
+
+    def __init__(self) -> None:
         self.mcp = FastMCP()
         self.initializer = ServerInitializer(InitializationConfig())
         self._initialized = False
-    
-    def start(self):
+        self.logger = logging.getLogger(__name__)
+
+    def start(self) -> None:
         """Start the WinDbg MCP Server."""
         try:
-            # Log startup banner
             self._log_startup_banner()
-            
-            # Run initialization sequence
-            connection_result = self.initializer.initialize()
+            self.initializer.initialize()
             self._initialized = True
-            
-            # Register all tools
             self._register_tools()
-        
-            # Log ready message
-            logger.info("MCP Server ready! Use get_help() to see available tools and examples.")
-            logger.info("")
-            
-            # Run the server
+            self.logger.info("MCP server ready. Listening on stdio.")
             self._run_server()
-            
-        except Exception as e:
-            logger.error(f"Failed to start server: {e}")
+        except Exception as e:  # pragma: no cover - startup path
+            self.logger.error(f"Failed to start server: {e}")
             raise
-    
-    def _log_startup_banner(self):
-        """Log the startup banner with tool information."""
-        tool_info = get_tool_info()
-        
-        logger.info("WinDbg MCP Server - Production Edition")
-        logger.info("=" * 50)
-        logger.info(f"Total tools: {tool_info['total_tools']}")
-        logger.info("Tool categories:")
-        
-        for category, details in tool_info['categories'].items():
-            logger.info(f"  📁 {category}: {len(details['tools'])} tools")
-            for tool in details['tools']:
-                logger.info(f"     • {tool}")
-        logger.info("")
-    
-    def _register_tools(self):
-        """Register all tools with the MCP server."""
-        logger.info("Registering tools...")
-        try:
-            register_all_tools(self.mcp)
-            logger.info("Successfully registered all tools")
-        except Exception as e:
-            logger.error(f"Failed to register tools: {e}")
-            raise
-    
-    def _run_server(self):
-        """Run the FastMCP server."""
+
+    def _log_startup_banner(self) -> None:
+        tool_info: Dict = get_tool_info()
+        self.logger.info("WinDbg MCP Server")
+        self.logger.info("=" * 40)
+        self.logger.info(f"Total tools: {tool_info['total_tools']}")
+        self.logger.info("Tool categories:")
+        for category, details in tool_info["categories"].items():
+            self.logger.info(f"  {category}: {len(details['tools'])} tools")
+
+    def _register_tools(self) -> None:
+        self.logger.debug("Registering tools…")
+        register_all_tools(self.mcp)
+
+    def _run_server(self) -> None:
         try:
             self.mcp.run()
         except KeyboardInterrupt:
-            # FastMCP closes stdio streams, so avoid logging after this
             pass
-        except Exception as e:
-            # Only log if streams are still available
-            try:
-                logger.error(f"Server error: {e}")
-            except:
-                pass
-            raise
 
 
-def main():
-    """Main entry point for the WinDbg MCP Server."""
+def main(argv: list[str] | None = None) -> int:
+    _configure_logging()
+    parser = argparse.ArgumentParser(prog="windbg-mcp", description="WinDbg MCP server")
+    parser.add_argument("--list-tools", action="store_true", help="Print available tools and exit")
+    parser.add_argument("--version", action="store_true", help="Print version and exit")
+    args = parser.parse_args(argv)
+
+    if args.version:
+        from mcp_server import __version__
+        print(__version__)
+        return 0
+
+    if args.list_tools:
+        info = get_tool_info()
+        print(f"Total tools: {info['total_tools']}")
+        for cat, details in info["categories"].items():
+            print(f"- {cat}: {', '.join(details['tools'])}")
+        return 0
+
     server = WinDbgMCPServer()
     server.start()
+    return 0
 
 
-if __name__ == "__main__":
-    main() 
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

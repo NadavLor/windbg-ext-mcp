@@ -1,9 +1,11 @@
 """
 Main performance optimization coordinator.
 
-This module coordinates all performance optimization features including
-caching, compression, streaming, and command optimization.
+Coordinates caching, compression, streaming, and execution optimization.
+Simplified and cleaned of corrupted strings.
 """
+from __future__ import annotations
+
 import logging
 import time
 import threading
@@ -16,7 +18,13 @@ from .compression import DataCompressor
 from .streaming import StreamingHandler
 from .command_optimizer import CommandOptimizer
 from core.communication import send_command
-from core.unified_cache import cache_command_result, get_cached_command_result, CacheContext, get_cache_stats, unified_cache
+from core.unified_cache import (
+    cache_command_result,
+    get_cached_command_result,
+    CacheContext,
+    get_cache_stats,
+    unified_cache,
+)
 from config import get_timeout_for_command, DebuggingMode
 
 # Import unified execution system
@@ -24,16 +32,16 @@ from core.execution import execute_command as execute_unified
 
 logger = logging.getLogger(__name__)
 
+
 class OptimizationLevel(Enum):
-    """Performance optimization levels."""
     NONE = "none"
     BASIC = "basic"
     AGGRESSIVE = "aggressive"
     MAXIMUM = "maximum"
 
+
 @dataclass
 class PerformanceMetrics:
-    """Performance metrics tracking."""
     total_commands: int = 0
     cached_hits: int = 0
     cache_miss: int = 0
@@ -43,184 +51,122 @@ class PerformanceMetrics:
     average_command_time: float = 0.0
     network_latency: float = 0.0
 
+
 # Commands that should bypass optimization and execute directly
 BYPASS_OPTIMIZATION_COMMANDS = {
-    ".reload /f", ".reload -f",  # Force reload needs direct execution
-    ".restart", ".reboot",       # System control commands
-    "g", "p", "t",              # Execution control commands  
-    "bp", "bc", "bd", "be",     # Breakpoint commands (state-changing)
-    ".attach", ".detach",       # Process attach/detach
-    ".symfix", ".sympath"       # Symbol path changes
+    ".reload /f", ".reload -f",
+    ".restart", ".reboot",
+    "g", "p", "t",
+    "bp", "bc", "bd", "be",
+    ".attach", ".detach",
+    ".symfix", ".sympath",
 }
 
+
 class PerformanceOptimizer:
-    """Main performance optimization coordinator."""
-    
-    def __init__(self, optimization_level: OptimizationLevel = OptimizationLevel.NONE):
+    def __init__(self, optimization_level: OptimizationLevel = OptimizationLevel.NONE) -> None:
         self.optimization_level = optimization_level
-        # Use unified cache instead of separate ResultCache
         self.compressor = DataCompressor()
         self.streaming = StreamingHandler()
         self.command_optimizer = CommandOptimizer()
         self.metrics = PerformanceMetrics()
         self._lock = threading.Lock()
-        
-        # Thread pool for async operations
         self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="PerfOpt")
-        
+
     def should_bypass_optimization(self, command: str) -> bool:
-        """
-        Determine if a command should bypass optimization and execute directly.
-        
-        Args:
-            command: The command to check
-            
-        Returns:
-            True if command should bypass optimization
-        """
-        command_lower = command.lower().strip()
-        
-        # Check against bypass list
-        for bypass_cmd in BYPASS_OPTIMIZATION_COMMANDS:
-            if bypass_cmd in command_lower:
-                return True
-        
-        # Commands with parameters that affect state
-        if any(pattern in command_lower for pattern in [
-            ".process /i", ".thread", "~", ".context",  # Context switching
-            "ed ", "ew ", "eb ", "eq ",                  # Memory editing
-            "!process", "!thread"                       # Process/thread manipulation
+        cmd = command.lower().strip()
+        if any(b in cmd for b in BYPASS_OPTIMIZATION_COMMANDS):
+            return True
+        if any(p in cmd for p in [
+            ".process /i", ".thread", "~", ".context",
+            "ed ", "ew ", "eb ", "eq ",
+            "!process", "!thread",
         ]):
             return True
-            
         return False
-        
-    # Use unified execution system for command execution
-    # Use core.execution.execute_command instead
-    
+
     def _execute_direct_command(self, command: str, start_time: float) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Execute command directly without optimization.
-        
-        Args:
-            command: Command to execute
-            start_time: Start time for metrics
-            
-        Returns:
-            Tuple of (success, result, metadata)
-        """
         try:
-            # Use centralized timeout configuration
             timeout_ms = get_timeout_for_command(command, DebuggingMode.VM_NETWORK)
-            
             result = send_command(command, timeout_ms=timeout_ms)
-            success = True
-            
-            execution_time = time.time() - start_time
-            metadata = {
+            exec_time = time.time() - start_time
+            meta = {
                 "cached": False,
                 "compressed": False,
                 "optimization_bypassed": True,
                 "timeout_ms": timeout_ms,
-                "response_time": execution_time,
-                "optimization_level": "direct"
+                "response_time": exec_time,
+                "optimization_level": "direct",
             }
-            
-            return success, result, metadata
-            
+            return True, result, meta
         except Exception as e:
-            execution_time = time.time() - start_time
-            metadata = {
-                "error": True,
-                "optimization_bypassed": True,
-                "timeout_ms": get_timeout_for_command(command, DebuggingMode.VM_NETWORK),
-                "response_time": execution_time,
-                "original_error": str(e)
+            return False, str(e), {"error": str(e)}
+
+    def execute_command(self, command: str) -> Dict[str, Any]:
+        start = time.time()
+
+        # Check cache first (unified cache)
+        cache_key = command.strip()
+        cached = get_cached_command_result(cache_key)
+        if cached is not None:
+            with self._lock:
+                self.metrics.total_commands += 1
+                self.metrics.cached_hits += 1
+            return {
+                "success": True,
+                "result": cached,
+                "metadata": {
+                    "cached": True,
+                    "response_time": 0.0,
+                    "optimization_level": self.optimization_level.value,
+                },
             }
-            return False, str(e), metadata
-    
-    def stream_large_command(self, command: str, timeout_category: str = "bulk") -> Generator[Dict[str, Any], None, None]:
-        """Stream large command output with optimization."""
-        if self.optimization_level == OptimizationLevel.NONE:
-            # Fallback to regular execution
-            try:
-                # Use centralized timeout configuration
-                timeout_ms = get_timeout_for_command(command, DebuggingMode.VM_NETWORK)
-                
-                result = send_command(command, timeout_ms=timeout_ms)
-                metadata = {"cached": False, "optimization": "none", "timeout_ms": timeout_ms}
-                yield {
-                    "type": "complete",
-                    "data": result,
-                    "metadata": metadata
-                }
-            except Exception as e:
-                yield {
-                    "type": "error",
-                    "message": str(e),
-                    "metadata": {"error": True, "timeout_ms": get_timeout_for_command(command, DebuggingMode.VM_NETWORK)}
-                }
-        else:
-            yield from self.streaming.stream_large_output(command, timeout_category)
-    
+
+        # Bypass if necessary
+        if self.should_bypass_optimization(command):
+            ok, res, meta = self._execute_direct_command(command, start)
+            with self._lock:
+                self.metrics.total_commands += 1
+                self.metrics.cache_miss += 1
+                self.metrics.average_command_time = (
+                    (self.metrics.average_command_time + (time.time() - start)) / 2.0
+                )
+            return {"success": ok, "result": res if ok else None, "error": None if ok else res, "metadata": meta}
+
+        # Use unified execution
+        exec_result = execute_unified(command, resilient=True, optimize=True)
+        with self._lock:
+            self.metrics.total_commands += 1
+            self.metrics.cache_miss += 1
+            self.metrics.average_command_time = (
+                (self.metrics.average_command_time + (time.time() - start)) / 2.0
+            )
+
+        if exec_result.success:
+            cache_command_result(cache_key, exec_result.result, CacheContext.DEFAULT)
+            return {
+                "success": True,
+                "result": exec_result.result,
+                "metadata": exec_result.to_dict(),
+            }
+        return {"success": False, "error": exec_result.error, "metadata": exec_result.to_dict()}
+
     def execute_command_batch(self, commands: List[str]) -> Dict[str, Any]:
-        """Execute multiple commands with optimization using unified execution system."""
         if not commands:
             return {"results": [], "optimization": "empty_batch"}
-        
-        if len(commands) == 1:
-            result = execute_unified(commands[0], resilient=True, optimize=True)
-            return {
-                "results": [{
-                    "command": commands[0], 
-                    "success": result.success, 
-                    "result": result.result, 
-                    "metadata": result.to_dict()
-                }],
-                "optimization": "single_command"
-            }
-        
-        # Optimize command sequence
-        batches = self.command_optimizer.optimize_command_sequence(commands)
-        
-        results = []
-        total_time = 0
-        
-        for batch in batches:
-            batch_start = time.time()
-            
-            for command in batch:
-                result = execute_unified(command, resilient=True, optimize=True)
-                results.append({
-                    "command": command,
-                    "success": result.success, 
-                    "result": result.result,
-                    "metadata": result.to_dict()
-                })
-            
-            batch_time = time.time() - batch_start
-            total_time += batch_time
-        
-        return {
-            "results": results,
-            "optimization": "batched",
-            "batch_count": len(batches),
-            "total_time": total_time,
-            "commands_per_second": len(commands) / max(total_time, 0.001)
-        }
-    
+        results: List[Dict[str, Any]] = []
+        for cmd in commands:
+            results.append(self.execute_command(cmd))
+        return {"results": results, "optimization": "batched"}
+
     def get_performance_report(self) -> Dict[str, Any]:
-        """Get comprehensive performance report."""
         cache_stats = get_cache_stats()
-        
         with self._lock:
             metrics = asdict(self.metrics)
-        
-        # Calculate performance indicators
         cache_hit_rate = metrics["cached_hits"] / max(metrics["total_commands"], 1)
         compression_rate = metrics["compression_saves"] / max(metrics["total_commands"], 1)
         bytes_saved_percent = metrics["total_bytes_saved"] / max(metrics["total_bytes_transferred"], 1) * 100
-        
+
         return {
             "optimization_level": self.optimization_level.value,
             "performance_metrics": metrics,
@@ -229,64 +175,37 @@ class PerformanceOptimizer:
                 "cache_hit_rate": cache_hit_rate,
                 "compression_rate": compression_rate,
                 "bytes_saved_percent": bytes_saved_percent,
-                "average_command_time": metrics["average_command_time"]
+                "average_command_time": metrics["average_command_time"],
             },
-            "recommendations": self._get_performance_recommendations(cache_hit_rate, compression_rate, metrics)
+            "recommendations": self._get_performance_recommendations(cache_hit_rate, compression_rate, metrics),
         }
-    
-    def optimize_for_network_debugging(self):
-        """Apply specific optimizations for network debugging scenarios."""
-        # Increase cache sizes for network debugging
+
+    def _get_performance_recommendations(self, cache_hit_rate: float, compression_rate: float, metrics: Dict[str, Any]) -> List[str]:
+        rec: List[str] = []
+        if cache_hit_rate < 0.3:
+            rec.append("Low cache hit rate — consider increasing cache TTL for stable commands")
+        elif cache_hit_rate > 0.8:
+            rec.append("Excellent cache performance")
+        if compression_rate < 0.1 and metrics["total_bytes_transferred"] > 1_000_000:
+            rec.append("Consider enabling compression for large data transfers")
+        if metrics["average_command_time"] > 5.0:
+            rec.append("Slow command execution — check network connectivity and VM performance")
+        if metrics["total_bytes_transferred"] > 10_000_000:
+            rec.append("High data transfer volume — streaming optimization recommended")
+        if not rec:
+            rec.append("Performance optimization is working well")
+        return rec
+
+    def optimize_for_network_debugging(self) -> None:
         if self.optimization_level != OptimizationLevel.NONE:
             self.compressor.max_size = 300
-            self.compressor.default_ttl = 600  # 10 minutes
-        
-        # Adjust compression thresholds for network
-        # Note: compressor.min_size is accessed via static methods
-        
-        # Optimize streaming chunk size for network
+            self.compressor.default_ttl = 600
         self.streaming.chunk_size = 2048
-        
         logger.info("Applied network debugging optimizations")
-    
-    def clear_caches(self):
-        """Clear all caches and reset metrics."""
+
+    def clear_caches(self) -> None:
         unified_cache.clear_all()
         with self._lock:
             self.metrics = PerformanceMetrics()
         logger.info("Cleared performance caches and metrics")
-    
-    def _get_performance_recommendations(self, cache_hit_rate: float, compression_rate: float, metrics: Dict[str, Any]) -> List[str]:
-        """Get performance optimization recommendations."""
-        recommendations = []
-        
-        if cache_hit_rate < 0.3:
-            recommendations.append("🔄 Low cache hit rate - consider increasing cache TTL for stable commands")
-        elif cache_hit_rate > 0.8:
-            recommendations.append("✅ Excellent cache performance")
-        
-        if compression_rate < 0.1 and metrics["total_bytes_transferred"] > 1000000:
-            recommendations.append("📦 Consider enabling compression for large data transfers")
-        
-        if metrics["average_command_time"] > 5.0:
-            recommendations.append("⏱️ Slow command execution - check network connectivity and VM performance")
-        
-        if metrics["total_bytes_transferred"] > 10000000:  # 10MB
-            recommendations.append("📊 High data transfer volume - streaming optimization recommended")
-        
-        if not recommendations:
-            recommendations.append("🚀 Performance optimization is working well")
-        
-        return recommendations
-    
-    def set_network_debugging_mode(self, enabled: bool):
-        """Configure for network debugging scenarios."""
-        if enabled:
-            # Increase timeouts and retries for network debugging
-            logger.info("Enabled network debugging mode - adjusted timeouts and compression")
-        else:
-            # Reset to normal operation
-            logger.info("Disabled network debugging mode")
-        
-        # Network debugging optimizations are now handled by unified cache
-        # with appropriate TTL settings per command type 
+
