@@ -137,7 +137,7 @@ def is_app_installed(app_info):
             return True
     elif os_type == "linux":
         # Check if binary is in PATH
-        if 'Cursor' in app_name and (shutil.which('cursor') or os.path.exists('~/.local/bin/cursor')):
+        if 'Cursor' in app_name and (shutil.which('cursor') or os.path.exists(os.path.expanduser('~/.local/bin/cursor'))):
             return True
         
     # If config file exists, we can assume the app is/was installed
@@ -155,7 +155,7 @@ def is_app_installed(app_info):
 
 def get_windbg_mcp_config():
     """Return the configuration for the windbg-mcp server."""
-    # Current tools from our modular architecture (13 tools total)
+    # Current tools from our modular architecture (16 tools total)
     tools_list = [
         # Session management tools
         "debug_session",
@@ -165,6 +165,7 @@ def get_windbg_mcp_config():
         # Command execution tools
         "run_command",
         "run_sequence",
+        "breakpoint_and_continue",
         
         # Analysis tools
         "analyze_process",
@@ -179,11 +180,8 @@ def get_windbg_mcp_config():
         # Support tools
         "troubleshoot",
         "get_help",
-        
-        # Diagnostic tools (from support_tools.py)
-        "diagnose_hybrid_connection",
         "test_windbg_communication",
-        "network_debugging_troubleshoot"
+        "network_debugging_troubleshoot",
     ]
     
     # Get the current script directory to find the server
@@ -191,12 +189,12 @@ def get_windbg_mcp_config():
     server_path = current_dir / "mcp_server" / "server.py"
     
     return {
-        "command": "python",
+        "command": sys.executable,
         "args": [str(server_path)],
         "env": {
             "DEBUG": "false"  # Set to "true" for debug logging
         },
-        "description": "WinDbg MCP Server - Enhanced Kernel Debugging with Hybrid Architecture",
+        "description": "WinDbg MCP Server (FastMCP, stdio)",
         "disabled": False,
         "timeout": 30000,  # 30 seconds timeout
         "autoApprove": tools_list,
@@ -230,7 +228,7 @@ def write_json_config(config_path, config_data):
         print(f"Error writing to {config_path}: {e}")
         return False
 
-def install_windbg_mcp(config_path, quiet=False):
+def install_windbg_mcp(config_path, quiet=False, dry_run: bool = False):
     """Install windbg-mcp configuration to the specified config file."""
     # Verify that the server file exists
     current_dir = Path(__file__).parent.absolute()
@@ -242,48 +240,53 @@ def install_windbg_mcp(config_path, quiet=False):
             print("Make sure you're running this script from the windbg-ext-mcp root directory")
         return False
     
-    # Read existing config
+    # Build configuration payload
+    windbg_config = get_windbg_mcp_config()
+
+    if dry_run:
+        if not quiet:
+            print(f"[DRY-RUN] Would install windbg-mcp at: {config_path}")
+            print(f"  Server path: {server_path}")
+            print(f"  Tools configured: {len(windbg_config['autoApprove'])} tools")
+            print("  Transport: stdio (FastMCP)")
+        return True
+
+    # Read existing config and write changes
     config = read_json_config(config_path)
-    
-    # Ensure mcpServers key exists
     if "mcpServers" not in config:
         config["mcpServers"] = {}
-    
-    # Add or update windbg-mcp entry
-    windbg_config = get_windbg_mcp_config()
     config["mcpServers"]["windbg-mcp"] = windbg_config
-    
-    # Write updated config
+
     success = write_json_config(config_path, config)
-    
     if success and not quiet:
         print(f"  Server path: {server_path}")
         print(f"  Tools configured: {len(windbg_config['autoApprove'])} tools")
         print(f"  Transport: stdio (FastMCP)")
         print(f"  Debug mode: {windbg_config['env']['DEBUG']}")
-    
+
     return success
 
-def uninstall_windbg_mcp(config_path, quiet=False):
+def uninstall_windbg_mcp(config_path, quiet=False, dry_run: bool = False):
     """Remove windbg-mcp configuration from the specified config file."""
-    # Skip if file doesn't exist
+    # Dry-run: report intent regardless of file existence
+    if dry_run:
+        if not quiet:
+            print(f"[DRY-RUN] Would uninstall windbg-mcp from: {config_path}")
+        return True
+    
+    # Skip if file does not exist
     if not os.path.exists(config_path):
         return False
     
-    # Read existing config
+    # Read existing config and remove entry if present
     config = read_json_config(config_path)
-    
-    # Remove windbg-mcp entry if it exists
     if "mcpServers" in config and "windbg-mcp" in config["mcpServers"]:
         del config["mcpServers"]["windbg-mcp"]
-        
-        # Write updated config
         success = write_json_config(config_path, config)
         return success
     
     return False  # Nothing to uninstall
-
-def process_clients(client_paths, action_func, quiet=False):
+def process_clients(client_paths, action_func, quiet=False, dry_run: bool = False):
     """Process all client configurations with the specified action function."""
     results = {}
     
@@ -299,11 +302,13 @@ def process_clients(client_paths, action_func, quiet=False):
             continue
         
         # Apply action
-        success = action_func(config_path, quiet)
+        success = action_func(config_path, quiet, dry_run)
         results[client_name] = success
         
         if not quiet:
             action_name = "Installed" if action_func == install_windbg_mcp else "Uninstalled"
+            if dry_run:
+                action_name = f"[DRY-RUN] {action_name}"
             status = "successfully" if success else "failed"
             print(f"{action_name} for {app_name} {status}: {config_path}")
     
@@ -316,11 +321,11 @@ def test_server_installation(quiet=False):
     
     if not server_path.exists():
         if not quiet:
-            print(f"❌ Server file not found: {server_path}")
-        return False
+            print(f"ERROR: Server file not found: {server_path}")
+            return False
     
     if not quiet:
-        print("🧪 Testing server installation...")
+        print("Testing server installation...")
     
     try:
         import subprocess
@@ -334,88 +339,84 @@ def test_server_installation(quiet=False):
         
         if result.returncode == 0:
             if not quiet:
-                print("✅ Server syntax check passed")
-                print("✅ All required modules can be imported")
+                print("Server syntax check passed")
+                print("All required modules can be imported")
             return True
         else:
             if not quiet:
-                print("❌ Server import failed:")
+                print("ERROR: Server import failed:")
                 print(f"   {result.stderr}")
             return False
             
     except subprocess.TimeoutExpired:
         if not quiet:
-            print("⚠️  Server test timed out (this might be normal)")
+            print("Server test timed out (this might be normal)")
         return True  # Timeout is acceptable for this test
     except Exception as e:
         if not quiet:
-            print(f"❌ Error testing server: {e}")
+            print(f"ERROR: Error testing server: {e}")
         return False
 
 def main():
-    # Set up argument parser
     parser = argparse.ArgumentParser(description="Install or uninstall WinDBG MCP server configuration")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--install", action="store_true", help="Install WinDBG MCP server configuration (default)")
     group.add_argument("--uninstall", action="store_true", help="Uninstall WinDBG MCP server configuration")
     group.add_argument("--test", action="store_true", help="Test server installation without installing")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without writing files")
     parser.add_argument("--quiet", action="store_true", help="Suppress informational messages")
     parser.add_argument("--force", action="store_true", help="Force installation even if app is not detected")
-    
+
     args = parser.parse_args()
-    
+
     # Handle test mode
     if args.test:
         success = test_server_installation(args.quiet)
         sys.exit(0 if success else 1)
-    
-    # If neither install nor uninstall is specified, default to install
+
+    # Default to install
     if not (args.install or args.uninstall):
         args.install = True
-    
-    # Test server before installation
+
+    # Pre-flight server check (skip prints, still gate failures)
     if args.install:
-        if not test_server_installation(True):  # Quiet test
-            print("❌ Server test failed. Fix server issues before installing.")
+        if not test_server_installation(True):
+            print("ERROR: Server test failed. Fix server issues before installing.")
             sys.exit(1)
-        elif not args.quiet:
-            print("✅ Server test passed\n")
-    
-    # Detect OS and get client paths
+        elif not args.quiet and not args.dry_run:
+            print("Server test passed\n")
+
+    # Resolve clients
     os_type = get_os_type()
     if not args.quiet:
         print(f"Detected OS: {os_type}")
-    
     client_paths = get_client_config_paths(os_type)
-    
-    # Process client configurations
+
+    # Install
     if args.install:
         if not args.quiet:
-            print("\n📦 Installing WinDbg MCP server configuration...")
-        results = process_clients(client_paths, install_windbg_mcp, args.quiet)
-        
-        # Summary
+            print("\nInstalling WinDbg MCP server configuration..." if not args.dry_run else "\n[DRY-RUN] Installing WinDbg MCP server configuration...")
+        results = process_clients(client_paths, install_windbg_mcp, args.quiet, args.dry_run)
+
         successful = sum(1 for success in results.values() if success)
         total = len([client for client, info in client_paths.items() if is_app_installed(info)])
-        
         if not args.quiet:
-            print(f"\n📊 Installation complete: {successful}/{total} clients configured")
+            print(f"\nInstallation complete: {successful}/{total} clients configured")
             if successful > 0:
-                print("\n🎯 Next steps:")
+                print("\nNext steps:")
                 print("   1. Restart your MCP client (Cursor, Claude Desktop, etc.)")
                 print("   2. The 'windbg-mcp' server should appear in your MCP tools")
                 print("   3. Start with get_help() to see available tools")
                 print("   4. Use debug_session(action='status') to test the connection")
-        
+
+    # Uninstall
     elif args.uninstall:
         if not args.quiet:
-            print("\n🗑️  Uninstalling WinDbg MCP server configuration...")
-        results = process_clients(client_paths, uninstall_windbg_mcp, args.quiet)
-        
-        # Summary
+            print("\nUninstalling WinDbg MCP server configuration..." if not args.dry_run else "\n[DRY-RUN] Uninstalling WinDbg MCP server configuration...")
+        results = process_clients(client_paths, uninstall_windbg_mcp, args.quiet, args.dry_run)
         successful = sum(1 for success in results.values() if success)
         if not args.quiet:
-            print(f"\n📊 Uninstallation complete: {successful} configurations removed")
+            print(f"\nUninstallation complete: {successful} configurations removed")
 
 if __name__ == "__main__":
-    main() 
+    main()

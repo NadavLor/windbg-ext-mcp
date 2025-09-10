@@ -1,256 +1,144 @@
-# WinDbg-ext-MCP
+# WinDbg‑ext‑MCP
 
-**Vibe debugging your Windows kernel!**
+WinDbg extension + Python MCP server. Lets MCP‑compatible clients (Cursor, Claude, VS Code + Cline/Roo) drive WinDbg with clean, validated commands. Kernel‑first; user‑mode works too.
 
-WinDbg-ext-MCP connects your LLM client (like Cursor, Claude, or VS Code) with WinDbg, enabling AI kernel debugging through natural language prompts. Designed for network-based kernel debugging scenarios with Windows VMs.
+## Contents
+- Quick Start
+- Architecture
+- Usage Examples
+- What’s Here
+- Sanity Check
+- Troubleshooting
+- Configuration
+- Tested With
+- Notes
 
----
+## Quick Start
 
-## 🎯 Overview
+Prereqs
+- Windows 10/11
+- WinDbg (Windows SDK “Debugging Tools for Windows”)
+- Visual Studio Build Tools (C++)
+- Python 3.10+ and Poetry 2.x
 
-This project enables you to debug Windows kernels using WinDbg while leveraging the power of LLMs (like Claude, GPT, etc.) through natural language interactions. When you hit a breakpoint in WinDbg while debugging a Windows VM over the network, you can write prompts in Cursor (or any MCP-compatible client) to get detailed kernel information and analysis.
-
----
-
-## 🏗️ Architecture
-
-The project uses a hybrid architecture optimized for network kernel debugging:
-
-```
-┌─────────────┐    stdio     ┌──────────────────┐    named pipe   ┌─────────────┐    network    ┌─────────────┐
-│   Cursor    │◄────────────►│  Python MCP      │◄───────────────►│   WinDbg    │◄─────────────►│ Target VM   │
-│   (Client)  │              │    Server        │                 │ Extension   │               │  (Kernel)   │
-└─────────────┘              └──────────────────┘                 └─────────────┘               └─────────────┘
-```
-
-### Components
-1. **MCP Client** (Cursor/IDE): Natural language interface
-2. **Python MCP Server** (`mcp_server/`): Core logic, optimization, and tool orchestration
-3. **WinDbg Extension** (`extension/`): C++ DLL for WinDbg integration
-4. **WinDbg**: Debugger connected to target VM
-5. **Target VM**: Windows kernel debugging target
-
----
-
-## ✨ Features
-
-### 🔧 Core Debugging Tools
-- **Session Management**: Connection health monitoring, session recovery
-- **Command Execution**: Validation, resilience, and performance optimization
-- **LLM Automation**: Full execution control and breakpoint automation for AI-driven debugging
-- **Process Analysis**: List, switch, and analyze kernel processes
-- **Thread Analysis**: Thread enumeration, stack traces, and context switching
-- **Memory Analysis**: Memory inspection, structure analysis, and search capabilities
-- **Kernel Analysis**: Kernel objects, IDT, handles, and system structures
-
-### 🚀 Performance & Reliability
-- **Network Optimization**: Designed for VM based kernel debugging over network
-- **Connection Resilience**: Automatic retry logic with exponential backoff
-- **Async Operations**: Parallel command execution for better performance
-- **Result Caching**: Caching with TTL for faster repeated operations
-- **Data Compression**: Automatic compression for large outputs
-- **Session Recovery**: State preservation and recovery for interrupted sessions
-
-### 🛠️ Natural Language Hacking
-- *"Hide explorer.exe using EPROCESS unlink and PspCidTable Unlink"*
-- *"Make OneDrive.exe appear to have no open handles"*
-- *"Make notepad.exe resistance to termination and kill attempts"*
-- *"Install invisible system call hooks that dont modify SSDT"*
-- *"Hide network connections from netstat while keeping them active"*
-- *"Make files invisible to directory enumeration but accessible by direct path"*
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Windows 10/11 (host machine)
-- [WinDbg (Windows Debugger)](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/) (Windows SDK)
-- Python 3.10+ with [Poetry](https://python-poetry.org/)
-- Target Windows VM configured for kernel debugging
-- MCP-compatible LLM client (Cursor, Claude Desktop, VS Code + Cline/Roo)
-- (Optional) Visual Studio with C++ build tools
-
-### Installation
-
-1. **Get the WinDbg Extension DLL:**
-
-   You have two options:
-
-   - **Option 1: Download Pre-built DLL**
-     - Go to the [Releases page](https://github.com/NadavLor/windbg-ext-mcp/releases) and download the latest `windbgmcpExt.dll` for your platform.
-     - Place the DLL in a known directory (you'll load it from this path in WinDbg).
-
-   - **Option 2: Clone and Build from Source**
-     ```sh
-     git clone https://github.com/NadavLor/windbg-ext-mcp.git
-     cd windbg-ext-mcp/extension
-     msbuild /p:Configuration=Release /p:Platform=x64
-     ```
-
-2. **Load the extension in WinDbg:**
-   ```sh
-   .load C:\path\to\windbgmcpExt.dll
-   ```
-
-3. **Configure your LLM client:**
-   ```sh
-   python install_client_config.py
-   ```
-
-4. **Install and start the MCP server:**
-   ```sh
-   poetry install
-   ```
-   Now either start the server via the LLM client or manually:
-   ```sh
-   poetry run python mcp_server/server.py
-   ```
-
-### For first time debuggers
-
-1. **Configure target VM for kernel debugging**
-   ```cmd
-   # On target VM (as Administrator)
-   bcdedit /debug on
-   bcdedit /dbgsettings net hostip:YOUR_HOST_IP port:50000 key:YOUR_KEY
-   shutdown /r /t 0
-   ```
-
-2. **Connect WinDbg to target VM**
-   ```cmd
-   # On host machine
-   windbg -k net:port=50000,key=YOUR_KEY
-   ```
-
-3. **Load the WinDbg extension**
-   ```
-   # In WinDbg command window
-   .load C:\path\to\windbgmcpExt.dll
-   ```
-
----
-
-## 📖 Usage Examples
-
-### Basic Debugging Session
-
-1. **Start a debugging session**
-   ```
-   # In Cursor chat
-   debug_session(action="status")
-   ```
-
-2. **List all processes in the kernel**
-   ```
-   # In Cursor chat
-   analyze_process(action="list")
-   ```
-
-3. **Analyze a specific process**
-   ```
-   # Copy process address from the list above
-   analyze_process(action="info", address="0xffff8e0e481d7080")
-   ```
-
-4. **Get memory information**
-   ```
-   analyze_memory(action="read", address="0x1000", size="0x100")
-   ```
-
-5. **Parallel command execution**
-   ```
-   async_manager(action="parallel", commands=["version", "lm", "!process -1 0"])
-   ```
-
-6. **Performance optimization**
-   ```
-   performance_manager(action="set_level", level="aggressive")
-   ```
-
-7. **Session recovery**
-   ```
-   session_manager(action="capture")  # Save current state
-   session_manager(action="recover", strategy="automatic")  # Recover if needed
-   ```
-
-### Natural Language Debugging
-
-You can also use natural language prompts in Cursor:
-
-- *"Show me all running processes in the kernel"*
-- *"What's the current thread's stack trace?"*
-- *"Analyze the memory at address 0x1000"*
-- *"Help me understand this crash dump"*
-- *"Set a breakpoint on nt!NtCreateFile and continue execution"*
-- *"Step through the next 3 instructions and show me the registers"*
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-- `DEBUG=true`: Enable debug logging
-- `VERBOSE=true`: Enable verbose logging
-- `OPTIMIZATION_LEVEL=aggressive`: Set performance optimization level
-
-### Network Debugging Modes
-- `stable`: Standard timeouts (reliable networks)
-- `unstable`: Extended timeouts (unreliable networks)  
-- `ultra_stable`: Maximum timeouts (poor connections)
-
-### Timeout Categories
-- `quick`: 5s (version, registers)
-- `normal`: 15s (most commands)
-- `slow`: 30s (stack traces, thread info)
-- `bulk`: 60s (process lists, module lists)
-- `analysis`: 120s (crash analysis, complex operations)
-
-## 🛠️ Available Tools
-
-### Session Management
-- `debug_session`: Get session status and metadata
-- `connection_manager`: Manage connection resilience and health
-- `session_manager`: Session recovery and state management
-
-### Command Execution  
-- `run_command`: Execute WinDbg commands with optimization
-- `run_sequence`: Execute multiple commands in sequence
-- `breakpoint_and_continue`: Set breakpoints and control execution in one step
-
-### Analysis Tools
-- `analyze_process`: Process analysis and context switching
-- `analyze_thread`: Thread analysis and stack traces
-- `analyze_memory`: Memory inspection and structure analysis
-- `analyze_kernel`: Kernel object and system analysis
-
-### Performance Tools
-- `performance_manager`: Performance optimization control
-- `async_manager`: Asynchronous command execution
-
-### Support Tools
-- `troubleshoot`: Debugging assistance and diagnostics
-- `get_help`: Tool documentation and examples
-
-### Debug Mode
-Enable debug logging for troubleshooting:
-```bash
-# Set environment variable
-set DEBUG=true
-
-# Or modify config.py
-DEBUG_ENABLED = True
+Build the extension (Developer PowerShell for VS):
+```powershell
+msbuild extension\windbgmcpExt.sln /p:Configuration=Release /p:Platform=x64
 ```
 
----
+Load in WinDbg:
+```text
+.load C:\path\to\windbgmcpExt.dll
+```
 
-## 📄 License
+Install and run the MCP server (in root directory):
+```powershell
+poetry install
+poetry run selftest
+poetry run mcp --list-tools
+poetry run mcp
+```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Architecture
+```text
+MCP Client (stdio)  <—>  Python MCP Server (stdio)  <—>  WinDbg Extension (named pipe)  <—>  WinDbg/Target
+                             FastMCP                      \\.\pipe\windbgmcp                   Kernel/User
+```
+- The extension hosts a named‑pipe server and executes WinDbg commands safely.
+- The Python server validates inputs, resolves timeouts, and exposes tools to MCP clients.
 
-## 🙏 Acknowledgments
+## Usage Examples
 
-- Microsoft WinDbg team for the debugging platform
-- Anthropic for the Model Context Protocol
-- FastMCP for the Python MCP framework
+General (natural language prompts)
+- "Show me all running processes in the kernel"
+- "What's the current thread's stack trace?"
+- "Analyze the memory at address 0x1000"
+- "Help me understand this crash dump"
+- "Set a breakpoint on nt!NtCreateFile and continue execution"
+- "Step through the next 3 instructions and show me the registers"
 
-**Happy kernel debugging! 🐛🔍**
+Rootkit behavior (research‑only)
+- "Hide explorer.exe using EPROCESS unlink and PspCidTable Unlink"
+- "Make OneDrive.exe appear to have no open handles"
+- "Make notepad.exe resistance to termination and kill attempts"
+- "Install invisible system call hooks that dont modify SSDT"
+- "Hide network connections from netstat while keeping them active"
+- "Make files invisible to directory enumeration but accessible by direct path"
+
+Note: These are for lawful, defensive research in controlled test labs only.
+
+## Available Tools
+- debug_session: session status and metadata
+- connection_manager: connection health and resilience controls
+- session_manager: capture/restore debugging context
+- run_command: execute a WinDbg command with validation/timeout handling
+- run_sequence: execute multiple commands in order
+- breakpoint_and_continue: set a breakpoint and continue execution
+- analyze_process: process enumeration, info, and context switching
+- analyze_thread: thread info and stack traces
+- analyze_memory: memory display, typed structures, searches
+- analyze_kernel: kernel objects and system analysis
+- performance_manager: optimization controls and performance report
+- async_manager: parallel execution and async task stats
+- troubleshoot: quick diagnostics and guidance
+- get_help: list tools and usage tips
+- test_windbg_communication: pipe connectivity test
+- network_debugging_troubleshoot: network debugging issue checks
+
+## What’s Here
+- `extension/`: C++ WinDbg extension. Named pipe `\\.\pipe\windbgmcp`. Exports: `help`, `objecttypes`, `hello`, `mcpstart`, `mcpstop`, `mcpstatus`.
+- `mcp_server/`: Python MCP server using FastMCP with modular tools (session, execution, analysis, performance, support).
+- `install_client_config.py`: Optional helper to write MCP client configs (Cursor/Claude/VS Code).
+
+## MCP Client Config (optional)
+Writes/updates MCP client configuration so your client can discover and launch this server.
+
+Supported clients
+- Cursor, Claude Desktop, VS Code (Cline / Roo Code), Windsurf (Codeium)
+
+Commands (run from repo root)
+```powershell
+# Dry run (preview changes)
+python install_client_config.py --install --dry-run
+
+# Install configs for detected clients
+python install_client_config.py --install
+
+# Uninstall (revert changes)
+python install_client_config.py --uninstall
+
+# Self-test only (no writes)
+python install_client_config.py --test
+```
+Notes
+- The script detects your OS and only touches clients it finds installed.
+- It uses your current Python (`sys.executable`) to run the server and writes a stdio MCP config.
+- Install mode runs a quick server import test first; fix any errors before proceeding.
+
+## Sanity Check (no target required)
+Self‑test stubs the transport and validates the protocol.
+```powershell
+poetry run selftest
+```
+Expected: “Selftest OK”.
+
+## Troubleshooting
+- Extension won’t load:
+  - Path or arch mismatch. Use x64 WinDbg with the x64 DLL.
+  - If linking fails, install Windows SDK Debugging Tools.
+- Pipe connection errors:
+  - The extension hosts the server. Ensure it’s started (`mcpstart`) and `\\.\pipe\windbgmcp` exists.
+- Slow/spotty results:
+  - Fix symbol paths, bump timeouts for remote/VM targets, and scope commands.
+
+## Configuration
+- `DEBUG=true` enables verbose logs in the Python server.
+- Timeouts auto‑resolve per command type. See `mcp_server/config.py` for categories.
+
+## Tested With
+- Windows 11, MSVC v143, Windows SDK 10.0.22621.0
+- Python 3.13, Poetry 2.1
+- FastMCP 2.5.1, pywin32 310
+
+## Notes
+- Build the DLL, run the server, load the extension. If WinDbg can’t load, the path is wrong or the arch doesn’t match. Fix that first.

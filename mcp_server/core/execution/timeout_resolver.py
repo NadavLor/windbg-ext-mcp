@@ -180,7 +180,10 @@ class TimeoutResolver:
             return TimeoutCategory.MEMORY
         
         # Execution control
-        elif any(cmd in command_lower for cmd in ["g", "p", "t", "bp", "bc", "bd", "be"]):
+        elif (
+            any(command_lower == cmd or command_lower.startswith(f"{cmd} ") for cmd in ["g", "p", "t"]) or
+            any(command_lower.startswith(f"{cmd} ") or command_lower == cmd for cmd in ["bp", "bc", "bd", "be"])
+        ):
             return TimeoutCategory.EXECUTION
         
         # Quick commands

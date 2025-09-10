@@ -10,6 +10,7 @@ This module provides a centralized execution layer that combines:
 """
 
 from .executor import UnifiedCommandExecutor, ExecutionContext, ExecutionResult
+from .result import ExecutionMode
 from .strategies import (
     ExecutionStrategy, DirectStrategy, ResilientStrategy, 
     OptimizedStrategy, AsyncStrategy
@@ -60,14 +61,15 @@ def execute_command(
 
 __all__ = [
     'UnifiedCommandExecutor',
-    'ExecutionContext', 
+    'ExecutionContext',
     'ExecutionResult',
+    'ExecutionMode',
     'ExecutionStrategy',
     'DirectStrategy',
-    'ResilientStrategy', 
+    'ResilientStrategy',
     'OptimizedStrategy',
     'AsyncStrategy',
     'TimeoutResolver',
     'get_executor',
-    'execute_command'
-] 
+    'execute_command',
+]

@@ -5,6 +5,8 @@ __pycache__/
 *.so
 .Python
 env/
+venv/
+.venv/
 build/
 develop-eggs/
 dist/
@@ -18,6 +20,16 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+.benchmarks/
+session_snapshots/
 
 # C++ build files
 extension/build/
